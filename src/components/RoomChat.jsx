@@ -33,7 +33,7 @@ export default function RoomChat({ room, displayName }) {
   const currentUserName = displayName || user?.name || "Guest";
   const currentUserId = user?._id || user?.id || null;
   const isGuest = !currentUserId;
-  // For reactions: logged-in uses real _id, guests use a pseudo id
+
   const reactionUserId = currentUserId || `guest_${currentUserName || "Guest"}`;
   const reactionDisplayName = currentUserName || "Guest";
 
@@ -43,6 +43,14 @@ export default function RoomChat({ room, displayName }) {
     const saved = roomId ? localStorage.getItem(roomThemeKey) : null;
     return saved || room.theme || "default";
   });
+
+  // 🔹 Local AI enabled state (so guests don't depend on refreshing room object)
+  const [allowAI, setAllowAI] = useState(!!room.allowAI);
+
+  // Keep allowAI in sync when the room prop changes (e.g. owner side)
+  useEffect(() => {
+    setAllowAI(!!room.allowAI);
+  }, [room.allowAI, roomId]);
 
   // When changing rooms, reload saved theme for that room
   useEffect(() => {
@@ -55,7 +63,7 @@ export default function RoomChat({ room, displayName }) {
     } else {
       setCurrentTheme("default");
     }
-  }, [roomId, room.theme]);
+  }, [roomId, room.theme, roomThemeKey]);
 
   // BACKGROUND
   const themeClass = useMemo(() => {
@@ -190,11 +198,18 @@ export default function RoomChat({ room, displayName }) {
       }
     };
 
+    // 🔹 New: handle AI toggled event
+    const handleAiToggled = ({ roomId: changedId, allowAI }) => {
+      if (changedId !== roomId) return;
+      setAllowAI(!!allowAI);
+    };
+
     socket.on("receive_message", handleReceive);
     socket.on("system_message", handleSystem);
     socket.on("typing", handleTyping);
     socket.on("reactionUpdated", handleReactionUpdated);
     socket.on("room_theme_changed", handleThemeChanged);
+    socket.on("room_ai_toggled", handleAiToggled);
 
     return () => {
       socket.off("receive_message", handleReceive);
@@ -202,6 +217,7 @@ export default function RoomChat({ room, displayName }) {
       socket.off("typing", handleTyping);
       socket.off("reactionUpdated", handleReactionUpdated);
       socket.off("room_theme_changed", handleThemeChanged);
+      socket.off("room_ai_toggled", handleAiToggled);
       socket.emit("leave_room", { roomId });
     };
   }, [roomId, room._id, hasBackendRoom, currentUserName, roomThemeKey]);
@@ -224,7 +240,8 @@ export default function RoomChat({ room, displayName }) {
 
     socket.emit("send_message", payload);
 
-    if (room.allowAI) {
+    // 🔹 Use local allowAI instead of room.allowAI
+    if (allowAI) {
       setAiThinking(true);
       try {
         const historyForAI = messages.map((m) => ({
@@ -303,7 +320,7 @@ export default function RoomChat({ room, displayName }) {
     socket.emit("change_room_theme", {
       roomId,
       theme: themeId,
-      changedBy: currentUserName, // 👈 send who changed it
+      changedBy: currentUserName,
     });
   };
 
@@ -312,7 +329,7 @@ export default function RoomChat({ room, displayName }) {
   };
 
   const startLongPress = (messageId) => {
-    if (!messageId) return; // still guard null
+    if (!messageId) return;
 
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = setTimeout(
@@ -337,7 +354,7 @@ export default function RoomChat({ room, displayName }) {
         <div>
           <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
             {room.name}
-            {room.allowAI && (
+            {allowAI && (
               <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 text-[10px] rounded-full">
                 AI Enabled
               </span>
@@ -389,12 +406,12 @@ export default function RoomChat({ room, displayName }) {
               : "";
 
             const reactionsByEmoji = (m.reactions || []).reduce((acc, r) => {
-              const key = r.emoji;
-              if (!acc[key]) {
-                acc[key] = { count: 0, names: [] };
+              const k = r.emoji;
+              if (!acc[k]) {
+                acc[k] = { count: 0, names: [] };
               }
-              acc[key].count += 1;
-              if (r.displayName) acc[key].names.push(r.displayName);
+              acc[k].count += 1;
+              if (r.displayName) acc[k].names.push(r.displayName);
               return acc;
             }, {});
 
@@ -469,7 +486,7 @@ export default function RoomChat({ room, displayName }) {
                             <span
                               key={emoji}
                               className="flex items-center"
-                              title={info.names.join(", ")} // native tooltip with names
+                              title={info.names.join(", ")}
                             >
                               <span className="mr-0.5">{emoji}</span>
                               <span className="text-[9px] text-slate-100">

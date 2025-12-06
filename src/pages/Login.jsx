@@ -58,11 +58,14 @@ export default function Login() {
       const profile = await res.json();
 
       // STEP 2: Send profile to backend to create or login user
-      const backendRes = await fetch("http://localhost:5000/api/auth/google", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(profile),
-      });
+      const backendRes = await fetch(
+        "https://lc-ai-backend-a080.onrender.com/auth/google",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(profile),
+        }
+      );
 
       const data = await backendRes.json();
       if (!backendRes.ok) return setError(data.error || "Google login failed");

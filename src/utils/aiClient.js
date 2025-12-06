@@ -1,5 +1,8 @@
+const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
+
 export async function callLCai(mode, messages, token) {
-  const res = await fetch("http://localhost:5000/api/chat", {
+  const res = await fetch(`${API_BASE_URL}/api/chat/${mode}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

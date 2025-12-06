@@ -15,5 +15,5 @@ export async function callLCai(mode, messages, token) {
   if (!res.ok) {
     throw new Error(data.error || "AI request failed");
   }
-  return data.reply; // { role, content }
+  return data.reply;
 }

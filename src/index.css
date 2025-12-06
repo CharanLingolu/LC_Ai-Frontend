@@ -1,0 +1,109 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Ensure app can stretch and shrink with viewport, helps keyboard pushing input up */
+html,
+body,
+#root {
+  height: 100%;
+}
+
+/* ---------- Shared chat theming ---------- */
+
+/* Any chat container that wants themes should use this + a chat-theme-* class */
+.chat-themable-container {
+  background: var(--chat-bg, #0f172a);
+  color: var(--chat-text, #e5e7eb);
+  position: relative;
+}
+
+/* Room chat specific wrappers */
+.room-chat-container .chat-messages-area {
+  background: transparent;
+}
+
+.room-chat-container .chat-input-area {
+  backdrop-filter: blur(6px);
+}
+
+/* Make sure inputs are readable on dark gradients (like love/sunset) */
+.chat-input-area input,
+.chat-input-area textarea {
+  color: #e5e7eb;
+}
+
+/* ---------- Chat Themes ---------- */
+
+.chat-theme-default {
+  --chat-bg: radial-gradient(
+    circle at top,
+    #0f172a 0%,
+    #020617 60%,
+    #020617 100%
+  );
+  --chat-text: #e5e7eb;
+}
+
+.chat-theme-love {
+  --chat-bg: radial-gradient(
+    circle at top,
+    #c7060c 0%,
+    #c6128d 40%,
+    #b01885 80%
+  );
+  --chat-text: #2e0340;
+}
+
+.chat-theme-midnight {
+  --chat-bg: radial-gradient(
+    circle at top,
+    #1f2937 0%,
+    #020617 70%,
+    #000000 100%
+  );
+  --chat-text: #e5e7eb;
+}
+
+.chat-theme-sunset {
+  --chat-bg: linear-gradient(135deg, #f65359, #b9551c, #a92082, #7749e1);
+  --chat-text: #1f2933;
+}
+
+/* Love theme hearts overlay */
+.chat-theme-love::before,
+.chat-theme-love::after {
+  content: "💖 💕 💘";
+  position: absolute;
+  pointer-events: none;
+  opacity: 0.12;
+  font-size: 3rem;
+}
+
+.chat-theme-love::before {
+  top: 0.5rem;
+  right: 1rem;
+}
+
+.chat-theme-love::after {
+  bottom: 0.5rem;
+  left: 1rem;
+}
+
+/* Keep text readable across themes */
+.chat-themable-container {
+  color: var(--chat-text);
+}
+
+/* ---------- TEXT GLOW FOR LOVE & SUNSET THEMES ---------- */
+/* Inner glow behind text & emojis inside chat bubbles */
+
+.glow-text-love {
+  text-shadow: 0 0 4px rgba(255, 255, 255, 0.9),
+    0 0 10px rgba(255, 192, 203, 0.95);
+}
+
+.glow-text-sunset {
+  text-shadow: 0 0 4px rgba(255, 255, 255, 0.9),
+    0 0 10px rgba(255, 210, 150, 0.95);
+}

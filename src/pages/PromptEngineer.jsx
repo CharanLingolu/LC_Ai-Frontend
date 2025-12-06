@@ -1,0 +1,77 @@
+import { useState } from "react";
+import { useAuth } from "../context/AuthContext";
+import { callLCai } from "../utils/aiClient";
+
+export default function PromptEngineer() {
+  const { token } = useAuth();
+  const [input, setInput] = useState("");
+  const [result, setResult] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleGenerate = async (e) => {
+    e.preventDefault();
+    const text = input.trim();
+    if (!text) return;
+
+    setLoading(true);
+    setResult("");
+
+    try {
+      const reply = await callLCai(
+        "prompt_engineer",
+        [
+          {
+            role: "user",
+            content: text,
+          },
+        ],
+        token
+      );
+
+      setResult(reply.content);
+    } catch (err) {
+      console.error(err);
+      setResult("Something went wrong. Please try again.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="h-full flex flex-col rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+      <h1 className="text-sm font-semibold mb-2">Prompt Engineer ✨</h1>
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+        Describe what you want the AI to do, and LC_Ai will craft a powerful
+        prompt for you.
+      </p>
+
+      <form onSubmit={handleGenerate} className="space-y-3 mb-4">
+        <textarea
+          className="w-full h-32 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm resize-none"
+          placeholder="Example: I want a prompt to generate app ideas for a student productivity app..."
+          value={input}
+          onChange={(e) => setInput(e.target.value)}
+        />
+        <button
+          type="submit"
+          disabled={loading}
+          className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-blue-400"
+        >
+          {loading ? "Generating..." : "Generate Prompt"}
+        </button>
+      </form>
+
+      <div className="flex-1 border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-3 text-sm">
+        {result ? (
+          <pre className="whitespace-pre-wrap text-slate-900 dark:text-slate-100">
+            {result}
+          </pre>
+        ) : (
+          <p className="text-xs text-slate-500 dark:text-slate-400">
+            Your generated prompt will appear here.
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}

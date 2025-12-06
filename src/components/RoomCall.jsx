@@ -1,0 +1,596 @@
+// src/components/RoomCall.jsx
+import { useEffect, useRef, useState } from "react";
+import { useAuth } from "../context/AuthContext";
+import { socket as callSocket } from "../socket"; // shared socket instance
+
+const RTC_CONFIG = {
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+};
+
+export default function RoomCall({ room, displayName }) {
+  const { user } = useAuth();
+  const roomId = room._id || room.id;
+
+  const localVideoRef = useRef(null);
+
+  const [localStream, setLocalStream] = useState(null);
+  const localStreamRef = useRef(null); // single source of truth for WebRTC
+
+  const [remoteStreams, setRemoteStreams] = useState({}); // peerId -> MediaStream
+  const peerConnectionsRef = useRef({}); // peerId -> RTCPeerConnection
+
+  const [inCall, setInCall] = useState(false);
+  const [error, setError] = useState("");
+  const [participantCount, setParticipantCount] = useState(0);
+
+  const [isMuted, setIsMuted] = useState(false);
+  const [isCameraOff, setIsCameraOff] = useState(true); // start with camera OFF
+
+  const [incomingCall, setIncomingCall] = useState(null);
+  const [fullscreen, setFullscreen] = useState(false);
+
+  // peerId -> display name
+  const [peerNames, setPeerNames] = useState({});
+
+  const isOwner = user?.email && room.ownerId === user.email;
+  const currentUserName = displayName || user?.name || "User";
+
+  // keep local video element synced
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream, fullscreen, inCall]);
+
+  // ----- helpers for remote streams -----
+  const addRemoteStream = (peerId, stream) => {
+    setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
+  };
+
+  const removeRemoteStream = (peerId) => {
+    setRemoteStreams((prev) => {
+      const copy = { ...prev };
+      delete copy[peerId];
+      return copy;
+    });
+  };
+
+  // ----- create RTCPeerConnection -----
+  const createPeerConnection = (peerId, isInitiator) => {
+    // close any old/stale pc for this peer
+    if (peerConnectionsRef.current[peerId]) {
+      try {
+        peerConnectionsRef.current[peerId].close();
+      } catch (e) {
+        console.warn("error closing old pc for", peerId, e);
+      }
+      delete peerConnectionsRef.current[peerId];
+    }
+
+    // also clear any old remote stream
+    removeRemoteStream(peerId);
+
+    const pc = new RTCPeerConnection(RTC_CONFIG);
+
+    const stream = localStreamRef.current;
+    if (stream) {
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+    }
+
+    pc.ontrack = (event) => {
+      addRemoteStream(peerId, event.streams[0]);
+    };
+
+    pc.onicecandidate = (event) => {
+      if (event.candidate) {
+        callSocket.emit("webrtc_ice_candidate", {
+          to: peerId,
+          candidate: event.candidate,
+        });
+      }
+    };
+
+    if (isInitiator) {
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .then(() =>
+          callSocket.emit("webrtc_offer", {
+            to: peerId,
+            sdp: pc.localDescription,
+          })
+        )
+        .catch((err) => console.error("Offer error:", err));
+    }
+
+    peerConnectionsRef.current[peerId] = pc;
+    return pc;
+  };
+
+  // ----- start / leave call -----
+  const startCall = async () => {
+    setError("");
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      });
+
+      // default: video off (user needs to tap)
+      stream.getVideoTracks().forEach((t) => (t.enabled = false));
+
+      localStreamRef.current = stream;
+      setLocalStream(stream);
+
+      // reset old WebRTC state in case this is a re-join
+      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+      peerConnectionsRef.current = {};
+      setRemoteStreams({});
+      setPeerNames({});
+      setParticipantCount(1);
+
+      callSocket.emit("join_call", {
+        roomId,
+        isOwner,
+        displayName: currentUserName,
+      });
+
+      setInCall(true);
+      setIsMuted(false);
+      setIsCameraOff(true);
+      setIncomingCall(null);
+    } catch (err) {
+      console.error("getUserMedia error:", err);
+      setError("Unable to access camera/mic. Please check permissions.");
+    }
+  };
+
+  const leaveCall = () => {
+    setInCall(false);
+    setParticipantCount(0);
+    setFullscreen(false);
+
+    callSocket.emit("leave_call", { roomId });
+
+    // close all pcs
+    Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+    peerConnectionsRef.current = {};
+
+    // stop local tracks
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current = null;
+    }
+    setLocalStream(null);
+
+    // clear remote streams & names
+    setRemoteStreams({});
+    setPeerNames({});
+    setIncomingCall(null);
+  };
+
+  // ----- controls -----
+  const toggleMute = () => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const newMuted = !isMuted;
+    stream.getAudioTracks().forEach((t) => (t.enabled = !newMuted));
+    setIsMuted(newMuted);
+  };
+
+  const toggleCamera = () => {
+    const stream = localStreamRef.current;
+    if (!stream) return;
+    const newOff = !isCameraOff;
+    stream.getVideoTracks().forEach((t) => (t.enabled = !newOff));
+    setIsCameraOff(newOff);
+  };
+
+  // ----- socket wiring -----
+  useEffect(() => {
+    if (!roomId) return;
+
+    const handleExistingPeers = ({ peers, participantCount }) => {
+      setParticipantCount(participantCount || 1);
+
+      setPeerNames((prev) => {
+        const copy = { ...prev };
+        (peers || []).forEach((p) => {
+          if (typeof p === "string") {
+            if (!copy[p]) copy[p] = "User";
+          } else if (p && typeof p === "object") {
+            const id = p.peerId || p.id;
+            if (id) {
+              copy[id] = p.name || p.displayName || copy[id] || "User";
+            }
+          }
+        });
+        return copy;
+      });
+
+      (peers || []).forEach((p) => {
+        const id = typeof p === "string" ? p : p.peerId || p.id;
+        if (id) createPeerConnection(id, true);
+      });
+    };
+
+    const handleUserJoined = ({
+      peerId,
+      name,
+      displayName,
+      participantCount,
+    }) => {
+      const label = name || displayName || "User";
+      setParticipantCount(participantCount || 1);
+      setPeerNames((prev) => ({ ...prev, [peerId]: label }));
+      createPeerConnection(peerId, false);
+    };
+
+    const handleOffer = async ({ from, sdp }) => {
+      let pc = peerConnectionsRef.current[from];
+      if (!pc) {
+        pc = createPeerConnection(from, false);
+      }
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+
+        callSocket.emit("webrtc_answer", {
+          to: from,
+          sdp: pc.localDescription,
+        });
+      } catch (err) {
+        console.error("Error handling offer:", err);
+      }
+    };
+
+    const handleAnswer = async ({ from, sdp }) => {
+      const pc = peerConnectionsRef.current[from];
+      if (!pc) return;
+
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      } catch (err) {
+        console.error("Error handling answer:", err);
+      }
+    };
+
+    const handleIceCandidate = async ({ from, candidate }) => {
+      const pc = peerConnectionsRef.current[from];
+      if (pc && candidate) {
+        try {
+          await pc.addIceCandidate(new RTCIceCandidate(candidate));
+        } catch (err) {
+          console.error("Error adding ICE candidate", err);
+        }
+      }
+    };
+
+    const handleUserLeft = ({ peerId, participantCount }) => {
+      peerConnectionsRef.current[peerId]?.close();
+      delete peerConnectionsRef.current[peerId];
+      removeRemoteStream(peerId);
+      setPeerNames((prev) => {
+        const copy = { ...prev };
+        delete copy[peerId];
+        return copy;
+      });
+
+      if (typeof participantCount === "number") {
+        setParticipantCount(participantCount);
+      } else {
+        setParticipantCount((prev) => Math.max(prev - 1, 1));
+      }
+    };
+
+    const handleCallStarted = ({ roomId: startedRoomId, startedBy }) => {
+      if (startedRoomId === roomId && !inCall) {
+        setIncomingCall({ startedBy });
+      }
+    };
+
+    const handleCallEnded = ({ roomId: endedRoomId }) => {
+      if (endedRoomId !== roomId) return;
+      leaveCall(); // reuse our cleanup
+    };
+
+    callSocket.on("existing_peers", handleExistingPeers);
+    callSocket.on("user_joined_call", handleUserJoined);
+    callSocket.on("webrtc_offer", handleOffer);
+    callSocket.on("webrtc_answer", handleAnswer);
+    callSocket.on("webrtc_ice_candidate", handleIceCandidate);
+    callSocket.on("user_left_call", handleUserLeft);
+    callSocket.on("call_started", handleCallStarted);
+    callSocket.on("call_ended", handleCallEnded);
+
+    return () => {
+      callSocket.off("existing_peers", handleExistingPeers);
+      callSocket.off("user_joined_call", handleUserJoined);
+      callSocket.off("webrtc_offer", handleOffer);
+      callSocket.off("webrtc_answer", handleAnswer);
+      callSocket.off("webrtc_ice_candidate", handleIceCandidate);
+      callSocket.off("user_left_call", handleUserLeft);
+      callSocket.off("call_started", handleCallStarted);
+      callSocket.off("call_ended", handleCallEnded);
+    };
+    // 🔹 no localStream here – we use localStreamRef inside helpers
+  }, [roomId, isOwner, inCall]);
+
+  // ----- fullscreen render -----
+  const renderFullscreen = () => {
+    if (!fullscreen || !inCall) return null;
+    return (
+      <div className="fixed inset-0 z-50 bg-black flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 bg-gray-900 text-white border-b border-gray-800">
+          <div>
+            <div className="font-semibold text-sm">Room Call – {room.name}</div>
+            <div className="text-xs text-gray-400">
+              In call: {participantCount || 1}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={toggleMute}
+              className={`px-3 py-1 rounded text-xs transition ${
+                isMuted ? "bg-red-600" : "bg-gray-700"
+              }`}
+            >
+              {isMuted ? "Unmute" : "Mute"}
+            </button>
+            <button
+              onClick={toggleCamera}
+              className={`px-3 py-1 rounded text-xs transition ${
+                isCameraOff ? "bg-red-600" : "bg-gray-700"
+              }`}
+            >
+              {isCameraOff ? "Start Video" : "Stop Video"}
+            </button>
+            <button
+              onClick={() => setFullscreen(false)}
+              className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs"
+            >
+              ⛶ Minimize
+            </button>
+            <button
+              onClick={leaveCall}
+              className="px-3 py-1 rounded bg-red-600 hover:bg-red-700 text-xs"
+            >
+              Leave
+            </button>
+          </div>
+        </div>
+
+        {/* fullscreen layout – vertical first, 2-column on md+ */}
+        <div className="flex-1 grid gap-4 p-4 grid-cols-1 md:grid-cols-2 overflow-y-auto">
+          {/* My video */}
+          <div className="flex flex-col h-full relative rounded-lg overflow-hidden bg-gray-800 ring-1 ring-gray-700">
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className={`w-full h-[40vh] md:h-full object-cover ${
+                isCameraOff ? "hidden" : "block"
+              }`}
+            />
+            {isCameraOff && (
+              <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                <div className="flex flex-col items-center">
+                  <span className="text-4xl mb-2">📷</span>
+                  <span className="text-xs">Camera is Off</span>
+                </div>
+              </div>
+            )}
+            <div className="absolute bottom-2 left-2 bg-black/60 text-white px-2 py-0.5 rounded text-xs">
+              You
+            </div>
+          </div>
+
+          {/* Remote videos */}
+          <div className="flex flex-col h-full">
+            <div className="flex-1 grid gap-2 grid-cols-1 sm:grid-cols-2 content-start">
+              {Object.entries(remoteStreams).map(([peerId, stream]) => (
+                <RemoteVideo
+                  key={peerId}
+                  stream={stream}
+                  name={peerNames[peerId]}
+                />
+              ))}
+              {Object.keys(remoteStreams).length === 0 && (
+                <div className="text-xs text-gray-400 border border-dashed border-gray-700 rounded-lg flex items-center justify-center h-[40vh] md:h-40">
+                  Waiting for others...
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
+
+  // ----- main (non-fullscreen) UI -----
+  return (
+    <>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2">
+              <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+                Voice &amp; Video
+              </h3>
+              {inCall && (
+                <span className="flex items-center gap-1 text-[10px] bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-1.5 py-0.5 rounded-full">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                  </span>
+                  Live · {participantCount || 1}
+                </span>
+              )}
+            </div>
+            {!inCall && (
+              <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                {isOwner ? "Tap Join to start." : "Wait for owner or join."}
+              </p>
+            )}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {inCall ? (
+              <>
+                <button
+                  onClick={toggleMute}
+                  className={`p-1.5 rounded-md text-xs transition ${
+                    isMuted
+                      ? "bg-red-100 text-red-600"
+                      : "bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                  }`}
+                  title="Toggle Mic"
+                >
+                  {isMuted ? "🎤❌" : "🎤"}
+                </button>
+                <button
+                  onClick={toggleCamera}
+                  className={`p-1.5 rounded-md text-xs transition ${
+                    isCameraOff
+                      ? "bg-red-100 text-red-600"
+                      : "bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-200"
+                  }`}
+                  title="Toggle Camera"
+                >
+                  {isCameraOff ? "📷❌" : "📷"}
+                </button>
+                <button
+                  onClick={() => setFullscreen(true)}
+                  className="p-1.5 rounded-md text-xs bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-700"
+                  title="Fullscreen"
+                >
+                  ⛶
+                </button>
+                <button
+                  onClick={leaveCall}
+                  className="px-3 py-1.5 rounded-md text-xs font-semibold bg-red-600 text-white hover:bg-red-700 shadow-sm"
+                >
+                  End
+                </button>
+              </>
+            ) : (
+              <button
+                onClick={startCall}
+                className="px-4 py-1.5 rounded-md text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition"
+              >
+                Join Call
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Incoming call banner */}
+        {incomingCall && !inCall && (
+          <div className="mt-2 flex items-center justify-between rounded-lg bg-blue-600 text-white px-3 py-2 text-xs shadow-md animate-pulse">
+            <span className="font-medium">
+              📞 {incomingCall.startedBy} started a call.
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={startCall}
+                className="px-2 py-0.5 rounded bg-white text-blue-700 font-bold hover:bg-gray-100"
+              >
+                Join
+              </button>
+              <button
+                onClick={() => setIncomingCall(null)}
+                className="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-800"
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        )}
+
+        {error && <div className="mt-2 text-[10px] text-red-500">{error}</div>}
+
+        {/* Small video preview strip */}
+        {inCall && !fullscreen && (
+          <div className="mt-2 flex gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600">
+            {/* local preview */}
+            <div className="relative shrink-0 w-28 h-20 rounded-lg overflow-hidden bg-black ring-1 ring-gray-200 dark:ring-gray-700">
+              <video
+                ref={localVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover ${
+                  isCameraOff ? "hidden" : "block"
+                }`}
+              />
+              {isCameraOff && (
+                <div className="absolute inset-0 flex items-center justify-center text-gray-500 text-[10px]">
+                  (Cam Off)
+                </div>
+              )}
+              <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-1 py-0.5 text-[9px] text-white truncate">
+                You
+              </div>
+            </div>
+
+            {/* remote previews */}
+            {Object.entries(remoteStreams).map(([peerId, stream]) => (
+              <div
+                key={peerId}
+                className="relative shrink-0 w-28 h-20 rounded-lg overflow-hidden bg-black ring-1 ring-gray-200 dark:ring-gray-700"
+              >
+                <RemoteVideoSmall stream={stream} />
+                <div className="absolute bottom-0 left-0 right-0 bg-black/50 px-1 py-0.5 text-[9px] text-white truncate">
+                  {peerNames[peerId] || "Guest"}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {renderFullscreen()}
+    </>
+  );
+}
+
+function RemoteVideoSmall({ stream }) {
+  const videoRef = useRef(null);
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+  return (
+    <video
+      ref={videoRef}
+      autoPlay
+      playsInline
+      className="w-full h-full object-cover"
+    />
+  );
+}
+
+function RemoteVideo({ stream, name }) {
+  const videoRef = useRef(null);
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+    }
+  }, [stream]);
+  return (
+    <div className="relative group rounded-lg overflow-hidden bg-black">
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        className="w-full h-[40vh] md:h-40 object-cover"
+      />
+      <div className="absolute bottom-2 left-2 bg-black/60 text-white px-2 py-0.5 rounded text-xs">
+        {name ? `User: ${name}` : "User"}
+      </div>
+    </div>
+  );
+}

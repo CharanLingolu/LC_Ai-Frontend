@@ -1,8 +1,9 @@
+// src/utils/aiClient.js
 const API_BASE_URL =
   import.meta.env.VITE_API_BASE_URL || "http://localhost:5000";
 
 export async function callLCai(mode, messages, token) {
-  const res = await fetch(`${API_BASE_URL}/api/chat/${mode}`, {
+  const res = await fetch(`${API_BASE_URL}/api/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -15,5 +16,5 @@ export async function callLCai(mode, messages, token) {
   if (!res.ok) {
     throw new Error(data.error || "AI request failed");
   }
-  return data.reply;
+  return data.reply; // { role, content }
 }

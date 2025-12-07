@@ -8,8 +8,9 @@ import { socket } from "../socket"; // 🔹 shared socket
 
 const GUEST_ID_KEY = "lc_ai_guest_id";
 const GUEST_NAME_KEY = "lc_ai_guest_name";
-const GUEST_LAST_ROOM_KEY = "lc_ai_guest_last_room";
+const LAST_ROOM_KEY = "lc_ai_last_room";
 const GUEST_ROOMS_KEY = "lc_ai_guest_rooms";
+const USER_ROOMS_PREFIX = "lc_ai_user_rooms_";
 
 function normalizeRoom(room) {
   if (!room) return null;
@@ -19,12 +20,17 @@ function normalizeRoom(room) {
   };
 }
 
+function getUserRoomsKey(email) {
+  if (!email) return null;
+  return USER_ROOMS_PREFIX + email;
+}
+
 export default function Rooms() {
   const { user, isAuthenticated } = useAuth();
   const { rooms, setRooms } = useRooms();
 
   const [selectedRoomId, setSelectedRoomId] = useState(() => {
-    return localStorage.getItem(GUEST_LAST_ROOM_KEY) || null;
+    return localStorage.getItem(LAST_ROOM_KEY) || null;
   });
 
   const [newRoomName, setNewRoomName] = useState("");
@@ -41,24 +47,44 @@ export default function Rooms() {
 
   const selectedRoom = rooms.find((r) => r.id === selectedRoomId) || null;
 
-  // 🔹 1) On initial mount, restore guest rooms from localStorage (UI only)
+  // ---------- 1) Restore rooms from localStorage on mount ----------
   useEffect(() => {
-    if (isAuthenticated) return;
-    const stored = localStorage.getItem(GUEST_ROOMS_KEY);
-    if (stored) {
-      try {
-        const parsed = JSON.parse(stored);
-        const normalized = (parsed || []).map(normalizeRoom).filter(Boolean);
-        if (normalized.length > 0) {
-          setRooms(normalized);
+    if (isAuthenticated && user?.email) {
+      const key = getUserRoomsKey(user.email);
+      if (key) {
+        const stored = localStorage.getItem(key);
+        if (stored) {
+          try {
+            const parsed = JSON.parse(stored);
+            const normalized = (parsed || [])
+              .map(normalizeRoom)
+              .filter(Boolean);
+            if (normalized.length > 0) {
+              setRooms(normalized);
+            }
+          } catch (e) {
+            console.warn("Failed to parse user rooms from storage:", e);
+          }
         }
-      } catch (e) {
-        console.warn("Failed to parse guest rooms from storage:", e);
+      }
+    } else {
+      // guest path
+      const stored = localStorage.getItem(GUEST_ROOMS_KEY);
+      if (stored) {
+        try {
+          const parsed = JSON.parse(stored);
+          const normalized = (parsed || []).map(normalizeRoom).filter(Boolean);
+          if (normalized.length > 0) {
+            setRooms(normalized);
+          }
+        } catch (e) {
+          console.warn("Failed to parse guest rooms from storage:", e);
+        }
       }
     }
-  }, [isAuthenticated, setRooms]);
+  }, [isAuthenticated, user?.email, setRooms]);
 
-  // --- SOCKET LISTENERS ---
+  // ---------- 2) Socket listeners ----------
   useEffect(() => {
     const handleUpdate = (serverRooms) => {
       // incognito, not yet joined → don't show global list
@@ -66,25 +92,34 @@ export default function Rooms() {
 
       const normalized = (serverRooms || []).map(normalizeRoom).filter(Boolean);
 
-      // 🔹 If guest + server sent empty list, DON'T wipe local rooms
-      if (!isAuthenticated && isGuest && normalized.length === 0) {
+      // 🔹 If server sent empty list, DON'T wipe what we already have
+      if (normalized.length === 0) {
         return;
       }
 
       setRooms(normalized);
 
-      // 🔹 Auto-select last room (for guest or logged user) after refresh
-      if (!selectedRoomId && normalized.length > 0) {
-        const storedLast = localStorage.getItem(GUEST_LAST_ROOM_KEY);
-        const match = storedLast
-          ? normalized.find((r) => r.id === storedLast)
-          : null;
-
-        if (match) {
-          setSelectedRoomId(match.id);
-        } else {
-          setSelectedRoomId(normalized[0].id);
+      // persist updated rooms
+      if (isAuthenticated && user?.email) {
+        const key = getUserRoomsKey(user.email);
+        if (key) {
+          localStorage.setItem(key, JSON.stringify(normalized));
         }
+      } else if (isGuest) {
+        localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(normalized));
+      }
+
+      // 🔹 Auto-select room on refresh
+      const storedLast = localStorage.getItem(LAST_ROOM_KEY);
+      const matchStored = storedLast
+        ? normalized.find((r) => r.id === storedLast)
+        : null;
+
+      if (matchStored) {
+        setSelectedRoomId(matchStored.id);
+      } else if (!selectedRoomId && normalized.length > 0) {
+        setSelectedRoomId(normalized[0].id);
+        localStorage.setItem(LAST_ROOM_KEY, normalized[0].id);
       }
     };
 
@@ -100,17 +135,12 @@ export default function Rooms() {
       }
 
       localStorage.setItem(GUEST_ID_KEY, userId);
-      localStorage.setItem(GUEST_LAST_ROOM_KEY, normalized.id);
+      localStorage.setItem(LAST_ROOM_KEY, normalized.id);
 
-      // 🔹 Merge into current rooms
       setRooms((prev) => {
         const filtered = prev.filter((r) => r.id !== normalized.id);
         const next = [...filtered, normalized];
-
-        // also persist to localStorage for guests
-        if (!isAuthenticated) {
-          localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(next));
-        }
+        localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(next));
         return next;
       });
 
@@ -162,7 +192,7 @@ export default function Rooms() {
     };
   }, [isAuthenticated, isGuest, user, setRooms, selectedRoomId]);
 
-  // Clear when fully logged out and not a guest
+  // ---------- 3) Clear when fully logged out and not a guest ----------
   useEffect(() => {
     if (!isAuthenticated && !isGuest) {
       setRooms([]);
@@ -210,6 +240,7 @@ export default function Rooms() {
 
     socket.emit("create_room", newRoom);
     setSelectedRoomId(clientId);
+    localStorage.setItem(LAST_ROOM_KEY, clientId);
     setNewRoomName("");
   };
 
@@ -226,7 +257,7 @@ export default function Rooms() {
       const roomName = serverRoom.name;
 
       if (isAuthenticated && user) {
-        // 🔹 LOGGED-IN JOIN: also persist membership in DB using /api/rooms/join
+        // LOGGED-IN JOIN: persist membership in DB
         try {
           const res = await fetch("http://localhost:5000/api/rooms/join", {
             method: "POST",
@@ -250,12 +281,21 @@ export default function Rooms() {
           const normalized = normalizeRoom(joinedRoom);
 
           setRooms((prev) => {
-            if (prev.some((r) => r.id === normalized.id)) return prev;
-            return [...prev, normalized];
+            const filtered = prev.filter((r) => r.id !== normalized.id);
+            const next = [...filtered, normalized];
+
+            if (user.email) {
+              const key = getUserRoomsKey(user.email);
+              if (key) {
+                localStorage.setItem(key, JSON.stringify(next));
+              }
+            }
+
+            return next;
           });
 
           setSelectedRoomId(normalized.id);
-          localStorage.setItem(GUEST_LAST_ROOM_KEY, normalized.id);
+          localStorage.setItem(LAST_ROOM_KEY, normalized.id);
         } catch (err) {
           console.error("Join room error:", err);
           alert("Failed to join room. Please try again.");
@@ -300,10 +340,16 @@ export default function Rooms() {
       const next = prev.map((r) =>
         r.id === roomId ? { ...r, name: newName } : r
       );
-      // persist guest rooms
-      if (!isAuthenticated && isGuest) {
+
+      if (isAuthenticated && user?.email) {
+        const key = getUserRoomsKey(user.email);
+        if (key) {
+          localStorage.setItem(key, JSON.stringify(next));
+        }
+      } else if (isGuest) {
         localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(next));
       }
+
       return next;
     });
     socket.emit("rename_room", { roomId, newName });
@@ -312,12 +358,24 @@ export default function Rooms() {
   const deleteRoom = (roomId) => {
     setRooms((prev) => {
       const next = prev.filter((r) => r.id !== roomId);
-      if (!isAuthenticated && isGuest) {
+
+      if (isAuthenticated && user?.email) {
+        const key = getUserRoomsKey(user.email);
+        if (key) {
+          localStorage.setItem(key, JSON.stringify(next));
+        }
+      } else if (isGuest) {
         localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(next));
       }
+
       return next;
     });
-    if (selectedRoomId === roomId) setSelectedRoomId(null);
+
+    if (selectedRoomId === roomId) {
+      setSelectedRoomId(null);
+      localStorage.removeItem(LAST_ROOM_KEY);
+    }
+
     socket.emit("delete_room", roomId);
   };
 
@@ -326,9 +384,16 @@ export default function Rooms() {
       const next = prev.map((r) =>
         r.id === roomId ? { ...r, allowAI: !r.allowAI } : r
       );
-      if (!isAuthenticated && isGuest) {
+
+      if (isAuthenticated && user?.email) {
+        const key = getUserRoomsKey(user.email);
+        if (key) {
+          localStorage.setItem(key, JSON.stringify(next));
+        }
+      } else if (isGuest) {
         localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(next));
       }
+
       return next;
     });
     socket.emit("toggle_room_ai", roomId);
@@ -338,7 +403,7 @@ export default function Rooms() {
   const handleGuestExit = () => {
     localStorage.removeItem(GUEST_ID_KEY);
     localStorage.removeItem(GUEST_NAME_KEY);
-    localStorage.removeItem(GUEST_LAST_ROOM_KEY);
+    localStorage.removeItem(LAST_ROOM_KEY);
     localStorage.removeItem(GUEST_ROOMS_KEY);
     setIsGuest(false);
     setGuestName("");
@@ -422,7 +487,7 @@ export default function Rooms() {
     <div
       onClick={() => {
         setSelectedRoomId(room.id);
-        localStorage.setItem(GUEST_LAST_ROOM_KEY, room.id);
+        localStorage.setItem(LAST_ROOM_KEY, room.id);
       }}
       className={`relative p-3 rounded-xl cursor-pointer border transition-all flex flex-col justify-between shrink-0 
         w-[200px] min-w-[200px] md:w-full md:min-w-0

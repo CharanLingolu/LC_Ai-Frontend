@@ -4,7 +4,7 @@ import RoomChat from "../components/RoomChat";
 import RoomCall from "../components/RoomCall";
 import { useAuth } from "../context/AuthContext";
 import { useRooms } from "../context/RoomContext";
-import { socket } from "../socket"; // 🔹 shared socket
+import { socket } from "../socket";
 
 const GUEST_ID_KEY = "lc_ai_guest_id";
 const GUEST_NAME_KEY = "lc_ai_guest_name";
@@ -37,7 +37,6 @@ export default function Rooms() {
   const [newRoomAI, setNewRoomAI] = useState(true);
   const [joinCode, setJoinCode] = useState("");
 
-  // unauthenticated but joined via code
   const [isGuest, setIsGuest] = useState(() => {
     return !!localStorage.getItem(GUEST_ID_KEY);
   });
@@ -107,7 +106,7 @@ export default function Rooms() {
         localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(normalized));
       }
 
-      // Auto-select room on refresh
+      // Auto-select room on refresh ONLY if we have a stored preference
       const storedLast = localStorage.getItem(LAST_ROOM_KEY);
       const matchStored = storedLast
         ? normalized.find((r) => r.id === storedLast)
@@ -115,14 +114,10 @@ export default function Rooms() {
 
       if (matchStored) {
         setSelectedRoomId(matchStored.id);
-      } else if (!selectedRoomId && normalized.length > 0) {
-        setSelectedRoomId(normalized[0].id);
-        localStorage.setItem(LAST_ROOM_KEY, normalized[0].id);
       }
     };
 
     const handleGuestSuccess = ({ room, userId, displayName }) => {
-      console.log("✅ guest_joined_success:", { room, userId, displayName });
       const normalized = normalizeRoom(room);
       if (!normalized) return;
 
@@ -146,7 +141,6 @@ export default function Rooms() {
     };
 
     const handleRoomCreateFailed = (payload) => {
-      console.warn("room_create_failed:", payload);
       const msg =
         payload?.message ||
         (payload?.reason === "LIMIT_REACHED"
@@ -270,7 +264,6 @@ export default function Rooms() {
           });
 
           if (!res.ok) {
-            console.error("Join room failed:", await res.text());
             alert("Failed to join room. Please try again.");
             return;
           }
@@ -317,12 +310,6 @@ export default function Rooms() {
 
         setGuestName(cleanName);
         setIsGuest(true);
-
-        console.log("Emitting join_room_guest:", {
-          code: trimmed,
-          name: cleanName,
-          guestId,
-        });
 
         socket.emit("join_room_guest", {
           code: trimmed,
@@ -407,6 +394,7 @@ export default function Rooms() {
     setGuestName("");
     setRooms([]);
     setSelectedRoomId(null);
+    window.location.reload();
   };
 
   const SettingsMenu = ({ room }) => {
@@ -423,7 +411,7 @@ export default function Rooms() {
       >
         <button
           onClick={() => setOpen((v) => !v)}
-          className="p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-500 dark:text-gray-400 transition"
+          className="p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-500 transition"
         >
           ⚙️
         </button>
@@ -432,14 +420,14 @@ export default function Rooms() {
             {!editing ? (
               <button
                 onClick={() => setEditing(true)}
-                className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-slate-700 dark:text-slate-200"
+                className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded dark:text-gray-200"
               >
                 ✏️ Rename
               </button>
             ) : (
               <div className="flex gap-1 p-1">
                 <input
-                  className="w-full px-1 py-0.5 rounded border bg-white dark:bg-gray-700 text-[10px] text-gray-900 dark:text-gray-100"
+                  className="w-full px-1 py-0.5 rounded border bg-white dark:bg-gray-700 text-[10px] dark:text-white"
                   value={nameValue}
                   onChange={(e) => setNameValue(e.target.value)}
                 />
@@ -462,7 +450,7 @@ export default function Rooms() {
                 toggleAI(room.id);
                 setOpen(false);
               }}
-              className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded text-slate-700 dark:text-slate-200"
+              className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded dark:text-gray-200"
             >
               🤖 {room.allowAI ? "Disable AI" : "Enable AI"}
             </button>
@@ -471,7 +459,7 @@ export default function Rooms() {
               onClick={() => {
                 if (confirm("Delete room?")) deleteRoom(room.id);
               }}
-              className="text-red-600 hover:text-red-700 w-full text-left px-2 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
+              className="text-red-600 w-full text-left px-2 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
             >
               🗑 Delete
             </button>
@@ -488,16 +476,16 @@ export default function Rooms() {
         localStorage.setItem(LAST_ROOM_KEY, room.id);
       }}
       className={`relative p-3 rounded-xl cursor-pointer border transition-all flex flex-col justify-between shrink-0 
-        w-[200px] min-w-[200px] md:w-full md:min-w-0
+        w-full min-h-[80px]
         ${
           selectedRoomId === room.id
-            ? "bg-blue-600 text-white border-blue-600 shadow-md ring-2 ring-blue-300 dark:ring-blue-900"
+            ? "bg-blue-600 text-white border-blue-600 shadow-md"
             : "bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"
         }`}
     >
       <div className="pr-6">
         <h3
-          className={`font-bold text-xs truncate ${
+          className={`font-bold text-sm truncate ${
             selectedRoomId === room.id
               ? "text-white"
               : "text-slate-800 dark:text-white"
@@ -524,9 +512,15 @@ export default function Rooms() {
     isAuthenticated && user?.name ? user.name : guestName || "Guest";
 
   return (
-    <div className="min-h-[calc(100vh-80px)] flex flex-col md:flex-row gap-4 p-3 sm:p-4 max-w-7xl mx-auto">
-      {/* LEFT COLUMN */}
-      <div className="shrink-0 w-full md:w-80 flex flex-col gap-3">
+    // FIX 1: Main Container uses 'dvh' to support mobile browsers, fixed height prevents body scroll
+    <div className="h-[calc(100dvh-64px)] w-full flex flex-col md:flex-row gap-4 p-2 sm:p-4 max-w-7xl mx-auto overflow-hidden">
+      {/* LEFT COLUMN: Sidebar (Room List) */}
+      {/* Logic: Hidden on mobile IF a room is selected. Visible on Desktop always. */}
+      <div
+        className={`shrink-0 w-full md:w-80 flex flex-col gap-3 h-full overflow-hidden ${
+          selectedRoomId ? "hidden md:flex" : "flex"
+        }`}
+      >
         {/* CREATE / JOIN BOX */}
         <div className="shrink-0 p-3 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900/50 flex flex-col gap-2">
           <div className="flex items-center justify-between">
@@ -534,6 +528,7 @@ export default function Rooms() {
               {isAuthenticated ? "New Room" : "Guest Join"}
             </h3>
 
+            {/* Guest Exit Button - Sidebar Version (Visible when no chat selected) */}
             {!isAuthenticated && isGuest && (
               <button
                 type="button"
@@ -551,9 +546,9 @@ export default function Rooms() {
                 value={newRoomName}
                 onChange={(e) => setNewRoomName(e.target.value)}
                 placeholder="Name..."
-                className="flex-1 min-w-0 px-2 py-1.5 text-xs rounded border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-1 focus:ring-blue-500 outline-none"
+                className="flex-1 min-w-0 px-2 py-1.5 text-xs rounded border border-gray-200 dark:border-gray-700 dark:bg-gray-800 outline-none"
               />
-              <button className="bg-slate-800 hover:bg-slate-700 text-white px-3 rounded text-xs transition">
+              <button className="bg-slate-800 text-white px-3 rounded text-xs transition">
                 +
               </button>
             </form>
@@ -570,19 +565,19 @@ export default function Rooms() {
               value={joinCode}
               onChange={(e) => setJoinCode(e.target.value)}
               placeholder="Enter Room Code"
-              className="flex-1 min-w-0 px-2 py-1.5 text-xs rounded border border-gray-200 dark:border-gray-700 dark:bg-gray-800 focus:ring-1 focus:ring-green-500 outline-none"
+              className="flex-1 min-w-0 px-2 py-1.5 text-xs rounded border border-gray-200 dark:border-gray-700 dark:bg-gray-800 outline-none"
             />
             <button
               onClick={() => handleJoinRoom(joinCode)}
-              className="text-green-600 hover:text-green-700 text-xs font-bold px-1 transition"
+              className="text-green-600 text-xs font-bold px-1"
             >
               Join
             </button>
           </div>
         </div>
 
-        {/* ROOM LIST */}
-        <div className="flex flex-row md:flex-col gap-2 overflow-x-auto md:overflow-y-auto pb-2 md:pb-0 min-h-[90px] md:min-h-0 md:flex-1 pr-1">
+        {/* ROOM LIST - Scrolls internally */}
+        <div className="flex-1 overflow-y-auto min-h-0 flex flex-col gap-2 pr-1 pb-1">
           {rooms.length === 0 && (
             <div className="shrink-0 w-full flex items-center justify-center p-4 text-xs text-gray-400 border border-gray-100 dark:border-gray-700 rounded-xl">
               {isAuthenticated || isGuest
@@ -596,13 +591,44 @@ export default function Rooms() {
         </div>
       </div>
 
-      {/* RIGHT COLUMN */}
-      <div className="flex-1 flex flex-col min-h-0 overflow-hidden gap-3 pb-4">
+      {/* RIGHT COLUMN: Chat Area */}
+      {/* Logic: On Mobile, only visible if room selected. On Desktop always visible. */}
+      <div
+        className={`flex-1 flex flex-col min-h-0 overflow-hidden gap-2 pb-1 ${
+          !selectedRoomId ? "hidden md:flex" : "flex"
+        }`}
+      >
         {selectedRoom ? (
           <>
+            {/* FIX 2: Mobile Header with 'Back' AND 'Exit' buttons */}
+            <div className="md:hidden flex items-center justify-between gap-2 pb-2 border-b border-gray-200 dark:border-gray-700 mb-1">
+              {/* BACK BUTTON FIX: Must clear local storage to stop auto-rejoin loop */}
+              <button
+                onClick={() => {
+                  localStorage.removeItem(LAST_ROOM_KEY);
+                  setSelectedRoomId(null);
+                }}
+                className="text-sm text-gray-500 dark:text-gray-300 flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-gray-800 px-2 py-1 rounded"
+              >
+                ← Back
+              </button>
+
+              {/* GUEST EXIT BUTTON: Added here so guests can exit while inside a room */}
+              {!isAuthenticated && isGuest && (
+                <button
+                  onClick={handleGuestExit}
+                  className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
+                >
+                  Exit Session
+                </button>
+              )}
+            </div>
+
             <div className="shrink-0">
               <RoomCall room={selectedRoom} displayName={currentDisplayName} />
             </div>
+
+            {/* Chat takes remaining height */}
             <div className="flex-1 min-h-0 relative">
               <RoomChat room={selectedRoom} displayName={currentDisplayName} />
             </div>

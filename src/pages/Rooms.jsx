@@ -92,10 +92,8 @@ export default function Rooms() {
 
       const normalized = (serverRooms || []).map(normalizeRoom).filter(Boolean);
 
-      // 🔹 If server sent empty list, DON'T wipe what we already have
-      if (normalized.length === 0) {
-        return;
-      }
+      // If server sent empty list, DON'T wipe what we already have
+      if (normalized.length === 0) return;
 
       setRooms(normalized);
 
@@ -109,7 +107,7 @@ export default function Rooms() {
         localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(normalized));
       }
 
-      // 🔹 Auto-select room on refresh
+      // Auto-select room on refresh
       const storedLast = localStorage.getItem(LAST_ROOM_KEY);
       const matchStored = storedLast
         ? normalized.find((r) => r.id === storedLast)
@@ -399,7 +397,7 @@ export default function Rooms() {
     socket.emit("toggle_room_ai", roomId);
   };
 
-  // 🔹 Guest Exit: clear local storage + state
+  // Guest Exit: clear local storage + state
   const handleGuestExit = () => {
     localStorage.removeItem(GUEST_ID_KEY);
     localStorage.removeItem(GUEST_NAME_KEY);
@@ -526,7 +524,7 @@ export default function Rooms() {
     isAuthenticated && user?.name ? user.name : guestName || "Guest";
 
   return (
-    <div className="h-[calc(100vh-80px)] flex flex-col md:flex-row gap-4 p-4 max-w-7xl mx-auto">
+    <div className="min-h-[calc(100vh-80px)] flex flex-col md:flex-row gap-4 p-3 sm:p-4 max-w-7xl mx-auto">
       {/* LEFT COLUMN */}
       <div className="shrink-0 w-full md:w-80 flex flex-col gap-3">
         {/* CREATE / JOIN BOX */}
@@ -599,7 +597,7 @@ export default function Rooms() {
       </div>
 
       {/* RIGHT COLUMN */}
-      <div className="flex-1 flex flex-col min-h-0 overflow-hidden gap-3">
+      <div className="flex-1 flex flex-col min-h-0 overflow-hidden gap-3 pb-4">
         {selectedRoom ? (
           <>
             <div className="shrink-0">

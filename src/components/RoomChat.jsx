@@ -27,12 +27,27 @@ export default function RoomChat({ room, displayName }) {
   const [activeReactionMessageId, setActiveReactionMessageId] = useState(null);
   const longPressTimerRef = useRef(null);
 
-  const roomId = room._id || room.id;
-  const hasBackendRoom = !!room._id;
+  // 🔹 Normalize backend room _id into a clean string
+  let backendRoomId = null;
+  if (typeof room._id === "string") {
+    backendRoomId = room._id;
+  } else if (room._id && typeof room._id === "object") {
+    if (typeof room._id.toString === "function") {
+      backendRoomId = room._id.toString();
+    } else if (room._id.$oid) {
+      backendRoomId = room._id.$oid;
+    } else {
+      backendRoomId = String(room._id);
+    }
+  }
+
+  // This is the id we use for socket rooms / UI
+  const roomId = backendRoomId || room.id || room.code;
+  const hasBackendRoom = !!backendRoomId;
 
   const currentUserName = displayName || user?.name || "Guest";
   const currentUserId = user?._id || user?.id || null;
-  const isGuest = !currentUserId;
+  const isGuest = !currentUserId; // (not used in logic, but kept if you need it later)
 
   const reactionUserId = currentUserId || `guest_${currentUserName || "Guest"}`;
   const reactionDisplayName = currentUserName || "Guest";
@@ -119,7 +134,7 @@ export default function RoomChat({ room, displayName }) {
     typingTimeoutRef.current = setTimeout(() => setTypingUser(null), 1500);
   };
 
-  // auto-scroll (inside the chat area only)
+  // auto-scroll
   useEffect(() => {
     if (messagesEndRef.current) {
       messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
@@ -131,13 +146,13 @@ export default function RoomChat({ room, displayName }) {
     if (!roomId) return;
 
     const loadHistory = async () => {
-      if (!hasBackendRoom) {
+      if (!hasBackendRoom || !backendRoomId) {
         setMessages([]);
         return;
       }
       try {
         const res = await fetch(
-          `http://localhost:5000/api/rooms/${room._id}/messages`
+          `https://lc-ai-backend-a080.onrender.com/api/rooms/${backendRoomId}/messages`
         );
         if (!res.ok) throw new Error("Failed to load");
         const data = await res.json();
@@ -198,7 +213,7 @@ export default function RoomChat({ room, displayName }) {
       }
     };
 
-    // 🔹 New: handle AI toggled event
+    // 🔹 handle AI toggled event
     const handleAiToggled = ({ roomId: changedId, allowAI }) => {
       if (changedId !== roomId) return;
       setAllowAI(!!allowAI);
@@ -220,7 +235,7 @@ export default function RoomChat({ room, displayName }) {
       socket.off("room_ai_toggled", handleAiToggled);
       socket.emit("leave_room", { roomId });
     };
-  }, [roomId, room._id, hasBackendRoom, currentUserName, roomThemeKey]);
+  }, [roomId, backendRoomId, hasBackendRoom, currentUserName, roomThemeKey]);
 
   const handleSend = async (e) => {
     e.preventDefault();
@@ -347,7 +362,7 @@ export default function RoomChat({ room, displayName }) {
 
   return (
     <div
-      className={`flex flex-col h-full max-h-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm chat-themable-container room-chat-container ${themeClass}`}
+      className={`flex flex-col h-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm chat-themable-container room-chat-container ${themeClass}`}
     >
       {/* Header */}
       <div className="px-3 sm:px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/70 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between shrink-0">
@@ -367,13 +382,13 @@ export default function RoomChat({ room, displayName }) {
           </p>
         </div>
 
-        <div className="flex flex-nowrap items-center justify-start sm:justify-end gap-1 max-w-full overflow-x-auto">
+        <div className="flex flex-wrap items-center justify-start sm:justify-end gap-1 max-w-full">
           {ROOM_THEMES.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => handleThemeChange(t.id)}
-              className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border transition whitespace-nowrap
+              className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border transition
                 ${
                   currentTheme === t.id
                     ? "bg-white/80 dark:bg-gray-800 text-slate-900 dark:text-slate-100 border-blue-500"
@@ -386,18 +401,8 @@ export default function RoomChat({ room, displayName }) {
         </div>
       </div>
 
-      {/* Messages (ONLY this area scrolls) */}
-      <div
-        className="
-          flex-1 min-h-0
-          overflow-y-auto
-          p-3 sm:p-4
-          space-y-4
-          scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600
-          chat-messages-area
-          max-h-[calc(100vh-260px)] sm:max-h-none
-        "
-      >
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 min-h-0 chat-messages-area">
         {Array.isArray(messages) &&
           messages.map((m, index) => {
             const key = m._id || `${m.createdAt}-${index}`;
@@ -557,12 +562,11 @@ export default function RoomChat({ room, displayName }) {
         onSubmit={handleSend}
         className="p-2 sm:p-3 bg-black/40 dark:bg-gray-900/90 border-t border-gray-200/30 dark:border-gray-700 shrink-0 chat-input-area"
       >
-        {/* Emojis row: horizontal scroll on small screens */}
-        <div className="flex flex-nowrap items-center gap-1 sm:gap-2 mb-2 text-lg sm:text-xl overflow-x-auto">
+        <div className="flex flex-wrap items-center gap-1 sm:gap-2 mb-2 text-lg sm:text-xl">
           <button
             type="button"
             onClick={handleMediaClick}
-            className="px-2 py-1 text-xs sm:text-sm rounded-lg border border-gray-200/40 dark:border-gray-700 bg-black/30 dark:bg-gray-800 hover:bg-black/40 dark:hover:bg-gray-700 text-gray-100 whitespace-nowrap"
+            className="px-2 py-1 text-xs sm:text-sm rounded-lg border border-gray-200/40 dark:border-gray-700 bg-black/30 dark:bg-gray-800 hover:bg-black/40 dark:hover:bg-gray-700 text-gray-100"
           >
             📎
           </button>

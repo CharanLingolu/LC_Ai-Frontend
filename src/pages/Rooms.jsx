@@ -251,17 +251,20 @@ export default function Rooms() {
       if (isAuthenticated && user) {
         // LOGGED-IN JOIN: persist membership in DB
         try {
-          const res = await fetch("http://localhost:5000/api/rooms/join", {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              code: trimmed,
-              userId: user._id || user.id,
-              userName: user.name,
-            }),
-          });
+          const res = await fetch(
+            "https://lc-ai-backend-a080.onrender.com/api/rooms/join",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                code: trimmed,
+                userId: user._id || user.id,
+                userName: user.name,
+              }),
+            }
+          );
 
           if (!res.ok) {
             alert("Failed to join room. Please try again.");

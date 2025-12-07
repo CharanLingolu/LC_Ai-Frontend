@@ -6,7 +6,7 @@ import { callLCai } from "../utils/aiClient.js";
 const STORAGE_KEY_PREFIX = "lc_ai_friend_history_";
 const THEME_STORAGE_KEY = "lc_ai_friend_theme";
 
-const INPUT_EMOJIS = ["❤️", "😀", "😂", "😍", "😢", "🔥", "👍", "🙏"];
+const INPUT_EMOJIS = ["❤️", "😀", "😂", "😢", "🔥", "👍", "🙏"];
 const REACTION_EMOJIS = ["❤️", "😂", "👍", "😮", "🔥", "😢"];
 
 const THEMES = [
@@ -240,8 +240,6 @@ export default function FriendMode() {
   };
 
   // ✅ Only one reaction per message (for this user)
-  // - If same emoji clicked again → remove reaction
-  // - If different emoji → replace old with new
   const handleReactionClick = (messageId, emoji) => {
     setMessages((prev) =>
       prev.map((m) => {
@@ -304,18 +302,18 @@ export default function FriendMode() {
       className={`h-full flex flex-col rounded-xl border border-gray-200 dark:border-gray-700 bg-transparent shadow-sm overflow-hidden chat-themable-container ${themeClass}`}
     >
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-900/40 dark:bg-gray-900/70 flex items-center justify-between shrink-0">
-        <div>
+      <div className="px-3 sm:px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-900/40 dark:bg-gray-900/70 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between shrink-0">
+        <div className="min-w-0">
           <h1 className="text-sm font-semibold text-slate-100">Friend Mode</h1>
-          <p className="text-xs text-slate-300">{modeLabel}</p>
+          <p className="text-xs text-slate-300 truncate">{modeLabel}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-start sm:justify-end gap-1 sm:gap-2">
           {THEMES.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => handleThemeChange(t.id)}
-              className={`px-2 py-0.5 rounded-full text-[10px] border transition
+              className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border transition
                 ${
                   theme === t.id
                     ? "bg-white/80 text-slate-900 border-blue-500"
@@ -330,14 +328,14 @@ export default function FriendMode() {
           <button
             type="button"
             onClick={handleClearChat}
-            className="ml-1 px-2 py-0.5 rounded-full text-[10px] border border-red-400 text-red-300 hover:bg-red-500/20"
+            className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border border-red-400 text-red-300 hover:bg-red-500/20 whitespace-nowrap"
             title="Clear conversation"
           >
             Clear
           </button>
 
           {user && (
-            <span className="text-xs text-slate-200 hidden sm:inline">
+            <span className="text-[10px] sm:text-xs text-slate-200 hidden sm:inline">
               Logged in as <b>{user.name}</b>
             </span>
           )}
@@ -347,7 +345,7 @@ export default function FriendMode() {
       {/* Messages */}
       <div
         ref={messagesContainerRef}
-        className="flex-1 min-h-0 overflow-y-auto px-4 py-3 pb-8 space-y-4 text-sm chat-messages-area"
+        className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-4 py-3 pb-8 space-y-4 text-sm chat-messages-area"
       >
         {messages.map((m) => {
           const isUser = m.role === "user";
@@ -361,7 +359,6 @@ export default function FriendMode() {
               })
             : "";
 
-          // ✅ Only my reaction (one per message)
           const myReaction = (m.reactions || []).find((r) => r.userId === "me");
 
           const bubbleClass = isUser
@@ -378,14 +375,14 @@ export default function FriendMode() {
               }`}
             >
               <div
-                className={`flex flex-col max-w-[80%] ${
+                className={`flex flex-col max-w-[85%] sm:max-w-[80%] ${
                   isUser ? "items-end" : "items-start"
                 }`}
               >
                 <span className="text-[10px] text-white/90 mb-1">{name}</span>
 
                 <div
-                  className={`px-4 py-2 text-sm shadow-sm break-words rounded-2xl cursor-pointer select-none ${bubbleClass} ${
+                  className={`px-3 sm:px-4 py-2 text-xs sm:text-sm shadow-sm break-words rounded-2xl cursor-pointer select-none ${bubbleClass} ${
                     isUser ? "rounded-br-sm" : "rounded-bl-sm"
                   }`}
                   onMouseDown={() => startLongPress(m.id)}
@@ -407,7 +404,7 @@ export default function FriendMode() {
                   </span>
                 </div>
 
-                <div className="flex items-center gap-2 mt-1 mx-1">
+                <div className="flex items-center flex-wrap gap-2 mt-1 mx-1">
                   {timeLabel && (
                     <span className="text-[9px] text-slate-100">
                       {timeLabel}
@@ -423,7 +420,7 @@ export default function FriendMode() {
                 </div>
 
                 {activeReactionMessageId === m.id && (
-                  <div className="mt-1 flex gap-1 text-xs bg-black/25 px-2 py-1 rounded-full shadow-md backdrop-blur-sm">
+                  <div className="mt-1 flex flex-wrap gap-1 text-xs bg-black/25 px-2 py-1 rounded-full shadow-md backdrop-blur-sm">
                     {REACTION_EMOJIS.map((emoji) => (
                       <button
                         key={emoji}
@@ -456,9 +453,9 @@ export default function FriendMode() {
       {/* Input */}
       <form
         onSubmit={handleSend}
-        className="border-t border-gray-200/50 dark:border-gray-700 px-3 py-2 flex flex-col gap-2 shrink-0 chat-input-area bg-black/40"
+        className="border-t border-gray-200/50 dark:border-gray-700 px-3 sm:px-4 py-2 flex flex-col gap-2 shrink-0 chat-input-area bg-black/40"
       >
-        <div className="flex gap-1 text-xl">
+        <div className="flex flex-wrap gap-1 text-lg sm:text-xl">
           {INPUT_EMOJIS.map((em) => (
             <button
               key={em}
@@ -471,7 +468,7 @@ export default function FriendMode() {
           ))}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <input
             className="flex-1 px-3 py-2 rounded-lg border border-gray-300/40 dark:border-gray-700 bg-black/40 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/70 placeholder:text-gray-400"
             placeholder={
@@ -485,7 +482,7 @@ export default function FriendMode() {
           <button
             type="submit"
             disabled={loading || !input.trim()}
-            className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed"
+            className="w-full sm:w-auto px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed"
           >
             Send
           </button>

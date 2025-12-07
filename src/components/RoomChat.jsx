@@ -4,7 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { callLCai } from "../utils/aiClient";
 import { socket } from "../socket";
 
-const INPUT_EMOJIS = ["❤️", "😀", "😂", "😍", "😢", "🔥", "👍", "🙏"];
+const INPUT_EMOJIS = ["❤️", "😀", "😂", "😢", "🔥", "👍", "🙏"];
 const REACTION_EMOJIS = ["❤️", "😂", "👍", "😮", "🔥", "😢"];
 
 const ROOM_THEMES = [
@@ -350,28 +350,30 @@ export default function RoomChat({ room, displayName }) {
       className={`flex flex-col h-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm chat-themable-container room-chat-container ${themeClass}`}
     >
       {/* Header */}
-      <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/70 flex items-center justify-between shrink-0">
-        <div>
-          <h2 className="text-sm font-bold text-slate-800 dark:text-slate-100 flex items-center gap-2">
-            {room.name}
+      <div className="px-3 sm:px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/70 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between shrink-0">
+        <div className="min-w-0">
+          <h2 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 flex flex-wrap items-center gap-1 sm:gap-2">
+            <span className="truncate max-w-[180px] sm:max-w-[260px]">
+              {room.name}
+            </span>
             {allowAI && (
-              <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 text-[10px] rounded-full">
+              <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300 text-[9px] sm:text-[10px] rounded-full whitespace-nowrap">
                 AI Enabled
               </span>
             )}
           </h2>
-          <p className="text-[10px] text-slate-500 dark:text-slate-400 font-mono">
+          <p className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 font-mono">
             Code: {room.code}
           </p>
         </div>
 
-        <div className="flex items-center gap-1">
+        <div className="flex flex-wrap items-center justify-start sm:justify-end gap-1 max-w-full">
           {ROOM_THEMES.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => handleThemeChange(t.id)}
-              className={`px-2 py-0.5 rounded-full text-[10px] border transition
+              className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border transition
                 ${
                   currentTheme === t.id
                     ? "bg-white/80 dark:bg-gray-800 text-slate-900 dark:text-slate-100 border-blue-500"
@@ -385,7 +387,7 @@ export default function RoomChat({ room, displayName }) {
       </div>
 
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 min-h-0 chat-messages-area">
+      <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 min-h-0 chat-messages-area">
         {Array.isArray(messages) &&
           messages.map((m, index) => {
             const key = m._id || `${m.createdAt}-${index}`;
@@ -450,7 +452,7 @@ export default function RoomChat({ room, displayName }) {
                   )}
 
                   <div
-                    className={`px-3 py-2 text-sm shadow-sm break-words cursor-pointer select-none rounded-2xl ${bubbleClass} ${
+                    className={`px-3 py-2 text-xs sm:text-sm shadow-sm break-words cursor-pointer select-none rounded-2xl ${bubbleClass} ${
                       isMe ? "rounded-tr-none" : "rounded-tl-none"
                     }`}
                     onMouseDown={() => startLongPress(uiId)}
@@ -472,7 +474,7 @@ export default function RoomChat({ room, displayName }) {
                     </span>
                   </div>
 
-                  <div className="flex items-center gap-2 mt-1 mx-1">
+                  <div className="flex items-center flex-wrap gap-2 mt-1 mx-1">
                     {timeLabel && (
                       <span className="text-[9px] text-slate-100">
                         {timeLabel}
@@ -500,7 +502,7 @@ export default function RoomChat({ room, displayName }) {
                   </div>
 
                   {activeReactionMessageId === uiId && (
-                    <div className="mt-1 flex gap-1 text-xs bg-black/25 px-2 py-1 rounded-full">
+                    <div className="mt-1 flex flex-wrap gap-1 text-xs bg-black/25 px-2 py-1 rounded-full">
                       {REACTION_EMOJIS.map((emoji) => (
                         <button
                           key={emoji}
@@ -543,13 +545,13 @@ export default function RoomChat({ room, displayName }) {
       {/* Input */}
       <form
         onSubmit={handleSend}
-        className="p-3 bg-black/40 dark:bg-gray-900/90 border-t border-gray-200/30 dark:border-gray-700 shrink-0 chat-input-area"
+        className="p-2 sm:p-3 bg-black/40 dark:bg-gray-900/90 border-t border-gray-200/30 dark:border-gray-700 shrink-0 chat-input-area"
       >
-        <div className="flex items-center gap-2 mb-2 text-xl">
+        <div className="flex flex-wrap items-center gap-1 sm:gap-2 mb-2 text-lg sm:text-xl">
           <button
             type="button"
             onClick={handleMediaClick}
-            className="px-2 py-1 text-sm rounded-lg border border-gray-200/40 dark:border-gray-700 bg-black/30 dark:bg-gray-800 hover:bg-black/40 dark:hover:bg-gray-700 text-gray-100"
+            className="px-2 py-1 text-xs sm:text-sm rounded-lg border border-gray-200/40 dark:border-gray-700 bg-black/30 dark:bg-gray-800 hover:bg-black/40 dark:hover:bg-gray-700 text-gray-100"
           >
             📎
           </button>
@@ -565,9 +567,9 @@ export default function RoomChat({ room, displayName }) {
           ))}
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex flex-col sm:flex-row gap-2">
           <input
-            className="flex-1 px-4 py-2.5 rounded-xl border border-gray-200/40 dark:border-gray-700 bg-black/40 dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-blue-500/70 transition-all placeholder:text-gray-400 text-slate-100"
+            className="flex-1 px-3 sm:px-4 py-2 sm:py-2.5 rounded-xl border border-gray-200/40 dark:border-gray-700 bg-black/40 dark:bg-gray-800 text-sm outline-none focus:ring-2 focus:ring-blue-500/70 transition-all placeholder:text-gray-400 text-slate-100"
             placeholder={`Message ${room.name}...`}
             value={input}
             onChange={handleInputChange}
@@ -575,7 +577,7 @@ export default function RoomChat({ room, displayName }) {
           <button
             type="submit"
             disabled={!input.trim() || aiThinking}
-            className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white transition-colors flex items-center justify-center"
+            className="w-full sm:w-auto px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed text-white transition-colors flex items-center justify-center"
           >
             <svg
               className="w-5 h-5 transform rotate-90"

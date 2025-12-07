@@ -1,7 +1,7 @@
 // src/components/RoomCall.jsx
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
-import { socket as callSocket } from "../socket"; // shared socket instance
+import { socket as callSocket } from "../socket";
 
 const RTC_CONFIG = {
   iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
@@ -9,12 +9,54 @@ const RTC_CONFIG = {
 
 export default function RoomCall({ room, displayName }) {
   const { user } = useAuth();
-  const roomId = room._id || room.id;
+
+  // --- SAFETY GUARD: if no room yet, don't crash ---
+  if (!room) {
+    return (
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+              Voice &amp; Video
+            </h3>
+            <p className="text-[10px] text-slate-500 mt-0.5">
+              Select a room and join to start a call.
+            </p>
+          </div>
+          <button
+            disabled
+            className="px-4 py-1.5 rounded-md text-xs font-semibold bg-gray-300 dark:bg-gray-700 text-gray-600 dark:text-gray-300 cursor-not-allowed"
+          >
+            Join Call
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // use whatever identifier we have
+  const roomId = room._id || room.id || room.code;
+  if (!roomId) {
+    return (
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+              Voice &amp; Video
+            </h3>
+            <p className="text-[10px] text-slate-500 mt-0.5">
+              This room has no id yet. Try opening it again.
+            </p>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const localVideoRef = useRef(null);
 
   const [localStream, setLocalStream] = useState(null);
-  const localStreamRef = useRef(null); // single source of truth for WebRTC
+  const localStreamRef = useRef(null);
 
   const [remoteStreams, setRemoteStreams] = useState({}); // peerId -> MediaStream
   const peerConnectionsRef = useRef({}); // peerId -> RTCPeerConnection
@@ -24,25 +66,24 @@ export default function RoomCall({ room, displayName }) {
   const [participantCount, setParticipantCount] = useState(0);
 
   const [isMuted, setIsMuted] = useState(false);
-  const [isCameraOff, setIsCameraOff] = useState(true); // start with camera OFF
+  const [isCameraOff, setIsCameraOff] = useState(true);
 
   const [incomingCall, setIncomingCall] = useState(null);
   const [fullscreen, setFullscreen] = useState(false);
 
-  // peerId -> display name
-  const [peerNames, setPeerNames] = useState({});
+  const [peerNames, setPeerNames] = useState({}); // peerId -> name
 
   const isOwner = user?.email && room.ownerId === user.email;
   const currentUserName = displayName || user?.name || "User";
 
-  // keep local video element synced
+  // keep local video element in sync
   useEffect(() => {
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
     }
   }, [localStream, fullscreen, inCall]);
 
-  // ----- helpers for remote streams -----
+  // ---------- helpers ----------
   const addRemoteStream = (peerId, stream) => {
     setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
   };
@@ -55,44 +96,14 @@ export default function RoomCall({ room, displayName }) {
     });
   };
 
-  const cleanupAll = () => {
-    // close all pcs
-    Object.values(peerConnectionsRef.current).forEach((pc) => {
-      try {
-        pc.close();
-      } catch (e) {
-        // ignore
-      }
-    });
-    peerConnectionsRef.current = {};
-
-    // stop local tracks
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
-      localStreamRef.current = null;
-    }
-    setLocalStream(null);
-
-    // clear remote streams & names
-    setRemoteStreams({});
-    setPeerNames({});
-    setIncomingCall(null);
-  };
-
-  // ----- create RTCPeerConnection -----
-  // isInitiator = true → createOffer and send to peer
-  const createPeerConnection = (peerId, name, isInitiator) => {
-    // close any old/stale pc for this peer
+  const createPeerConnection = (peerId, isInitiator) => {
     if (peerConnectionsRef.current[peerId]) {
       try {
         peerConnectionsRef.current[peerId].close();
-      } catch (e) {
-        console.warn("error closing old pc for", peerId, e);
-      }
+      } catch {}
       delete peerConnectionsRef.current[peerId];
     }
 
-    // also clear any old remote stream
     removeRemoteStream(peerId);
 
     const pc = new RTCPeerConnection(RTC_CONFIG);
@@ -115,45 +126,24 @@ export default function RoomCall({ room, displayName }) {
       }
     };
 
-    pc.onconnectionstatechange = () => {
-      if (
-        pc.connectionState === "failed" ||
-        pc.connectionState === "disconnected" ||
-        pc.connectionState === "closed"
-      ) {
-        removeRemoteStream(peerId);
-        delete peerConnectionsRef.current[peerId];
-      }
-    };
-
-    // keep name in state
-    setPeerNames((prev) => ({
-      ...prev,
-      [peerId]: name || prev[peerId] || "User",
-    }));
-
     if (isInitiator) {
-      (async () => {
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
+      pc.createOffer()
+        .then((offer) => pc.setLocalDescription(offer))
+        .then(() =>
           callSocket.emit("webrtc_offer", {
             to: peerId,
             sdp: pc.localDescription,
-          });
-        } catch (err) {
-          console.error("Offer error:", err);
-        }
-      })();
+          })
+        )
+        .catch((err) => console.error("Offer error:", err));
     }
 
     peerConnectionsRef.current[peerId] = pc;
     return pc;
   };
 
-  // ----- start / leave call -----
+  // ---------- start / leave ----------
   const startCall = async () => {
-    if (!roomId) return;
     setError("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -161,20 +151,13 @@ export default function RoomCall({ room, displayName }) {
         audio: true,
       });
 
-      // default: video off (user needs to tap)
+      // start with camera off
       stream.getVideoTracks().forEach((t) => (t.enabled = false));
 
       localStreamRef.current = stream;
       setLocalStream(stream);
 
-      // reset old WebRTC state in case this is a re-join
-      Object.values(peerConnectionsRef.current).forEach((pc) => {
-        try {
-          pc.close();
-        } catch (e) {
-          // ignore
-        }
-      });
+      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
       peerConnectionsRef.current = {};
       setRemoteStreams({});
       setPeerNames({});
@@ -197,16 +180,27 @@ export default function RoomCall({ room, displayName }) {
   };
 
   const leaveCall = () => {
-    if (roomId) {
-      callSocket.emit("leave_call", { roomId });
-    }
     setInCall(false);
     setParticipantCount(0);
     setFullscreen(false);
-    cleanupAll();
+
+    callSocket.emit("leave_call", { roomId });
+
+    Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+    peerConnectionsRef.current = {};
+
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current = null;
+    }
+    setLocalStream(null);
+
+    setRemoteStreams({});
+    setPeerNames({});
+    setIncomingCall(null);
   };
 
-  // ----- controls -----
+  // ---------- controls ----------
   const toggleMute = () => {
     const stream = localStreamRef.current;
     if (!stream) return;
@@ -223,48 +217,50 @@ export default function RoomCall({ room, displayName }) {
     setIsCameraOff(newOff);
   };
 
-  // ----- socket wiring -----
+  // ---------- socket wiring ----------
   useEffect(() => {
     if (!roomId) return;
 
-    // When we join a call, server sends us the existing peers (everyone already in the call).
-    // We (the joining user) INITIATE offers to them.
-    const handleExistingPeers = ({
-      roomId: incomingRoomId,
-      peers,
-      participantCount,
-    }) => {
-      if (String(incomingRoomId) !== String(roomId)) return;
+    const handleExistingPeers = ({ peers, participantCount }) => {
       setParticipantCount(participantCount || 1);
 
-      if (!localStreamRef.current) return; // we must already have media
+      setPeerNames((prev) => {
+        const copy = { ...prev };
+        (peers || []).forEach((p) => {
+          if (typeof p === "string") {
+            if (!copy[p]) copy[p] = "User";
+          } else if (p && typeof p === "object") {
+            const id = p.peerId || p.id;
+            if (id) {
+              copy[id] = p.name || p.displayName || copy[id] || "User";
+            }
+          }
+        });
+        return copy;
+      });
 
-      (peers || []).forEach(({ peerId, name }) => {
-        createPeerConnection(peerId, name, true); // we are initiator
+      (peers || []).forEach((p) => {
+        const id = typeof p === "string" ? p : p.peerId || p.id;
+        if (id) createPeerConnection(id, true);
       });
     };
 
-    // Fired to existing participants when someone new joins
-    // They DO NOT initiate offers; they will receive offers from the newcomer.
     const handleUserJoined = ({
-      roomId: incomingRoomId,
       peerId,
       name,
+      displayName,
       participantCount,
     }) => {
-      if (String(incomingRoomId) !== String(roomId)) return;
-      const label = name || "User";
+      const label = name || displayName || "User";
       setParticipantCount(participantCount || 1);
       setPeerNames((prev) => ({ ...prev, [peerId]: label }));
-      // no need to create PC here; it will be created when we receive their offer
+      createPeerConnection(peerId, false);
     };
 
     const handleOffer = async ({ from, sdp }) => {
-      if (!inCall || !localStreamRef.current) return;
-      const name = peerNames[from] || "User";
       let pc = peerConnectionsRef.current[from];
       if (!pc) {
-        pc = createPeerConnection(from, name, false);
+        pc = createPeerConnection(from, false);
       }
 
       try {
@@ -303,22 +299,9 @@ export default function RoomCall({ room, displayName }) {
       }
     };
 
-    const handleUserLeft = ({
-      roomId: incomingRoomId,
-      peerId,
-      participantCount,
-      name,
-    }) => {
-      if (String(incomingRoomId) !== String(roomId)) return;
-
-      if (peerConnectionsRef.current[peerId]) {
-        try {
-          peerConnectionsRef.current[peerId].close();
-        } catch (e) {
-          // ignore
-        }
-        delete peerConnectionsRef.current[peerId];
-      }
+    const handleUserLeft = ({ peerId, participantCount }) => {
+      peerConnectionsRef.current[peerId]?.close();
+      delete peerConnectionsRef.current[peerId];
       removeRemoteStream(peerId);
       setPeerNames((prev) => {
         const copy = { ...prev };
@@ -333,12 +316,8 @@ export default function RoomCall({ room, displayName }) {
       }
     };
 
-    const handleCallStarted = ({
-      roomId: startedRoomId,
-      startedBy = "Someone",
-    }) => {
-      if (String(startedRoomId) !== String(roomId)) return;
-      if (!inCall) {
+    const handleCallStarted = ({ roomId: startedRoomId, startedBy }) => {
+      if (String(startedRoomId) === String(roomId) && !inCall) {
         setIncomingCall({ startedBy });
       }
     };
@@ -367,20 +346,12 @@ export default function RoomCall({ room, displayName }) {
       callSocket.off("call_started", handleCallStarted);
       callSocket.off("call_ended", handleCallEnded);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, inCall]);
+  }, [roomId, isOwner, inCall]);
 
-  // cleanup on unmount / room change
-  useEffect(() => {
-    return () => {
-      leaveCall();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId]);
-
-  // ----- fullscreen render -----
+  // ---------- fullscreen ----------
   const renderFullscreen = () => {
     if (!fullscreen || !inCall) return null;
+
     return (
       <div className="fixed inset-0 z-50 bg-black flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 bg-gray-900 text-white border-b border-gray-800">
@@ -422,9 +393,8 @@ export default function RoomCall({ room, displayName }) {
           </div>
         </div>
 
-        {/* fullscreen layout – vertical first, 2-column on md+ */}
         <div className="flex-1 grid gap-4 p-4 grid-cols-1 md:grid-cols-2 overflow-y-auto">
-          {/* My video */}
+          {/* local video */}
           <div className="flex flex-col h-full relative rounded-lg overflow-hidden bg-gray-800 ring-1 ring-gray-700">
             <video
               ref={localVideoRef}
@@ -448,7 +418,7 @@ export default function RoomCall({ room, displayName }) {
             </div>
           </div>
 
-          {/* Remote videos */}
+          {/* remote videos */}
           <div className="flex flex-col h-full">
             <div className="flex-1 grid gap-2 grid-cols-1 sm:grid-cols-2 content-start">
               {Object.entries(remoteStreams).map(([peerId, stream]) => (
@@ -470,7 +440,7 @@ export default function RoomCall({ room, displayName }) {
     );
   };
 
-  // ----- main (non-fullscreen) UI -----
+  // ---------- compact main UI (no big black block) ----------
   return (
     <>
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
@@ -483,8 +453,8 @@ export default function RoomCall({ room, displayName }) {
               {inCall && (
                 <span className="flex items-center gap-1 text-[10px] bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-1.5 py-0.5 rounded-full">
                   <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
                   </span>
                   Live · {participantCount || 1}
                 </span>
@@ -547,9 +517,8 @@ export default function RoomCall({ room, displayName }) {
           </div>
         </div>
 
-        {/* Incoming call banner */}
         {incomingCall && !inCall && (
-          <div className="mt-2 flex items-center justify-between rounded-lg bg-blue-600 text-white px-3 py-2 text-xs shadow-md animate-pulse">
+          <div className="mt-2 flex items-center justify-between rounded-lg bg-blue-600 text-white px-3 py-2 text-xs shadow-md">
             <span className="font-medium">
               📞 {incomingCall.startedBy} started a call.
             </span>
@@ -572,10 +541,9 @@ export default function RoomCall({ room, displayName }) {
 
         {error && <div className="mt-2 text-[10px] text-red-500">{error}</div>}
 
-        {/* Small video preview strip */}
+        {/* small preview strip only when in call */}
         {inCall && !fullscreen && (
           <div className="mt-2 flex gap-2 overflow-x-auto pb-1 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600">
-            {/* local preview */}
             <div className="relative shrink-0 w-28 h-20 rounded-lg overflow-hidden bg-black ring-1 ring-gray-200 dark:ring-gray-700">
               <video
                 ref={localVideoRef}
@@ -596,7 +564,6 @@ export default function RoomCall({ room, displayName }) {
               </div>
             </div>
 
-            {/* remote previews */}
             {Object.entries(remoteStreams).map(([peerId, stream]) => (
               <div
                 key={peerId}
@@ -642,7 +609,7 @@ function RemoteVideo({ stream, name }) {
     }
   }, [stream]);
   return (
-    <div className="relative group rounded-lg overflow-hidden bg-black">
+    <div className="relative rounded-lg overflow-hidden bg-black">
       <video
         ref={videoRef}
         autoPlay

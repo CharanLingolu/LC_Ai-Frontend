@@ -47,7 +47,7 @@ export default function RoomChat({ room, displayName }) {
 
   const currentUserName = displayName || user?.name || "Guest";
   const currentUserId = user?._id || user?.id || null;
-  const isGuest = !currentUserId; // (not used in logic, but kept if you need it later)
+  const isGuest = !currentUserId;
 
   const reactionUserId = currentUserId || `guest_${currentUserName || "Guest"}`;
   const reactionDisplayName = currentUserName || "Guest";
@@ -361,10 +361,12 @@ export default function RoomChat({ room, displayName }) {
   };
 
   return (
+    // FIX: Using h-full here means it will fill the 'flex-1 min-h-0' container from Rooms.jsx
+    // 'flex flex-col' allows us to separate header, messages, and input.
     <div
-      className={`flex flex-col h-full rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm chat-themable-container room-chat-container ${themeClass}`}
+      className={`h-full flex flex-col rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm chat-themable-container room-chat-container ${themeClass}`}
     >
-      {/* Header */}
+      {/* Header - shrink-0 ensures it never collapses */}
       <div className="px-3 sm:px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/70 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between shrink-0">
         <div className="min-w-0">
           <h2 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 flex flex-wrap items-center gap-1 sm:gap-2">
@@ -401,7 +403,7 @@ export default function RoomChat({ room, displayName }) {
         </div>
       </div>
 
-      {/* Messages */}
+      {/* Messages Area - flex-1 min-h-0 ensures THIS area scrolls, not the page */}
       <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 min-h-0 chat-messages-area">
         {Array.isArray(messages) &&
           messages.map((m, index) => {
@@ -557,7 +559,7 @@ export default function RoomChat({ room, displayName }) {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input */}
+      {/* Input - shrink-0 ensures it stays anchored at the bottom */}
       <form
         onSubmit={handleSend}
         className="p-2 sm:p-3 bg-black/40 dark:bg-gray-900/90 border-t border-gray-200/30 dark:border-gray-700 shrink-0 chat-input-area"

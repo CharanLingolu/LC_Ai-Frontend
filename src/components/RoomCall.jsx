@@ -55,8 +55,33 @@ export default function RoomCall({ room, displayName }) {
     });
   };
 
+  const cleanupAll = () => {
+    // close all pcs
+    Object.values(peerConnectionsRef.current).forEach((pc) => {
+      try {
+        pc.close();
+      } catch (e) {
+        // ignore
+      }
+    });
+    peerConnectionsRef.current = {};
+
+    // stop local tracks
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((t) => t.stop());
+      localStreamRef.current = null;
+    }
+    setLocalStream(null);
+
+    // clear remote streams & names
+    setRemoteStreams({});
+    setPeerNames({});
+    setIncomingCall(null);
+  };
+
   // ----- create RTCPeerConnection -----
-  const createPeerConnection = (peerId, isInitiator) => {
+  // isInitiator = true → createOffer and send to peer
+  const createPeerConnection = (peerId, name, isInitiator) => {
     // close any old/stale pc for this peer
     if (peerConnectionsRef.current[peerId]) {
       try {
@@ -90,16 +115,36 @@ export default function RoomCall({ room, displayName }) {
       }
     };
 
+    pc.onconnectionstatechange = () => {
+      if (
+        pc.connectionState === "failed" ||
+        pc.connectionState === "disconnected" ||
+        pc.connectionState === "closed"
+      ) {
+        removeRemoteStream(peerId);
+        delete peerConnectionsRef.current[peerId];
+      }
+    };
+
+    // keep name in state
+    setPeerNames((prev) => ({
+      ...prev,
+      [peerId]: name || prev[peerId] || "User",
+    }));
+
     if (isInitiator) {
-      pc.createOffer()
-        .then((offer) => pc.setLocalDescription(offer))
-        .then(() =>
+      (async () => {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
           callSocket.emit("webrtc_offer", {
             to: peerId,
             sdp: pc.localDescription,
-          })
-        )
-        .catch((err) => console.error("Offer error:", err));
+          });
+        } catch (err) {
+          console.error("Offer error:", err);
+        }
+      })();
     }
 
     peerConnectionsRef.current[peerId] = pc;
@@ -108,6 +153,7 @@ export default function RoomCall({ room, displayName }) {
 
   // ----- start / leave call -----
   const startCall = async () => {
+    if (!roomId) return;
     setError("");
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -122,7 +168,13 @@ export default function RoomCall({ room, displayName }) {
       setLocalStream(stream);
 
       // reset old WebRTC state in case this is a re-join
-      Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
+      Object.values(peerConnectionsRef.current).forEach((pc) => {
+        try {
+          pc.close();
+        } catch (e) {
+          // ignore
+        }
+      });
       peerConnectionsRef.current = {};
       setRemoteStreams({});
       setPeerNames({});
@@ -145,27 +197,13 @@ export default function RoomCall({ room, displayName }) {
   };
 
   const leaveCall = () => {
+    if (roomId) {
+      callSocket.emit("leave_call", { roomId });
+    }
     setInCall(false);
     setParticipantCount(0);
     setFullscreen(false);
-
-    callSocket.emit("leave_call", { roomId });
-
-    // close all pcs
-    Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
-    peerConnectionsRef.current = {};
-
-    // stop local tracks
-    if (localStreamRef.current) {
-      localStreamRef.current.getTracks().forEach((t) => t.stop());
-      localStreamRef.current = null;
-    }
-    setLocalStream(null);
-
-    // clear remote streams & names
-    setRemoteStreams({});
-    setPeerNames({});
-    setIncomingCall(null);
+    cleanupAll();
   };
 
   // ----- controls -----
@@ -189,46 +227,44 @@ export default function RoomCall({ room, displayName }) {
   useEffect(() => {
     if (!roomId) return;
 
-    const handleExistingPeers = ({ peers, participantCount }) => {
+    // When we join a call, server sends us the existing peers (everyone already in the call).
+    // We (the joining user) INITIATE offers to them.
+    const handleExistingPeers = ({
+      roomId: incomingRoomId,
+      peers,
+      participantCount,
+    }) => {
+      if (String(incomingRoomId) !== String(roomId)) return;
       setParticipantCount(participantCount || 1);
 
-      setPeerNames((prev) => {
-        const copy = { ...prev };
-        (peers || []).forEach((p) => {
-          if (typeof p === "string") {
-            if (!copy[p]) copy[p] = "User";
-          } else if (p && typeof p === "object") {
-            const id = p.peerId || p.id;
-            if (id) {
-              copy[id] = p.name || p.displayName || copy[id] || "User";
-            }
-          }
-        });
-        return copy;
-      });
+      if (!localStreamRef.current) return; // we must already have media
 
-      (peers || []).forEach((p) => {
-        const id = typeof p === "string" ? p : p.peerId || p.id;
-        if (id) createPeerConnection(id, true);
+      (peers || []).forEach(({ peerId, name }) => {
+        createPeerConnection(peerId, name, true); // we are initiator
       });
     };
 
+    // Fired to existing participants when someone new joins
+    // They DO NOT initiate offers; they will receive offers from the newcomer.
     const handleUserJoined = ({
+      roomId: incomingRoomId,
       peerId,
       name,
-      displayName,
       participantCount,
     }) => {
-      const label = name || displayName || "User";
+      if (String(incomingRoomId) !== String(roomId)) return;
+      const label = name || "User";
       setParticipantCount(participantCount || 1);
       setPeerNames((prev) => ({ ...prev, [peerId]: label }));
-      createPeerConnection(peerId, false);
+      // no need to create PC here; it will be created when we receive their offer
     };
 
     const handleOffer = async ({ from, sdp }) => {
+      if (!inCall || !localStreamRef.current) return;
+      const name = peerNames[from] || "User";
       let pc = peerConnectionsRef.current[from];
       if (!pc) {
-        pc = createPeerConnection(from, false);
+        pc = createPeerConnection(from, name, false);
       }
 
       try {
@@ -267,9 +303,22 @@ export default function RoomCall({ room, displayName }) {
       }
     };
 
-    const handleUserLeft = ({ peerId, participantCount }) => {
-      peerConnectionsRef.current[peerId]?.close();
-      delete peerConnectionsRef.current[peerId];
+    const handleUserLeft = ({
+      roomId: incomingRoomId,
+      peerId,
+      participantCount,
+      name,
+    }) => {
+      if (String(incomingRoomId) !== String(roomId)) return;
+
+      if (peerConnectionsRef.current[peerId]) {
+        try {
+          peerConnectionsRef.current[peerId].close();
+        } catch (e) {
+          // ignore
+        }
+        delete peerConnectionsRef.current[peerId];
+      }
       removeRemoteStream(peerId);
       setPeerNames((prev) => {
         const copy = { ...prev };
@@ -284,15 +333,19 @@ export default function RoomCall({ room, displayName }) {
       }
     };
 
-    const handleCallStarted = ({ roomId: startedRoomId, startedBy }) => {
-      if (startedRoomId === roomId && !inCall) {
+    const handleCallStarted = ({
+      roomId: startedRoomId,
+      startedBy = "Someone",
+    }) => {
+      if (String(startedRoomId) !== String(roomId)) return;
+      if (!inCall) {
         setIncomingCall({ startedBy });
       }
     };
 
     const handleCallEnded = ({ roomId: endedRoomId }) => {
-      if (endedRoomId !== roomId) return;
-      leaveCall(); // reuse our cleanup
+      if (String(endedRoomId) !== String(roomId)) return;
+      leaveCall();
     };
 
     callSocket.on("existing_peers", handleExistingPeers);
@@ -314,8 +367,16 @@ export default function RoomCall({ room, displayName }) {
       callSocket.off("call_started", handleCallStarted);
       callSocket.off("call_ended", handleCallEnded);
     };
-    // 🔹 no localStream here – we use localStreamRef inside helpers
-  }, [roomId, isOwner, inCall]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, inCall]);
+
+  // cleanup on unmount / room change
+  useEffect(() => {
+    return () => {
+      leaveCall();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId]);
 
   // ----- fullscreen render -----
   const renderFullscreen = () => {

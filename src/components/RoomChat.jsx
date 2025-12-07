@@ -27,12 +27,27 @@ export default function RoomChat({ room, displayName }) {
   const [activeReactionMessageId, setActiveReactionMessageId] = useState(null);
   const longPressTimerRef = useRef(null);
 
-  const roomId = room._id || room.id;
-  const hasBackendRoom = !!room._id;
+  // 🔹 Normalize backend room _id into a clean string
+  let backendRoomId = null;
+  if (typeof room._id === "string") {
+    backendRoomId = room._id;
+  } else if (room._id && typeof room._id === "object") {
+    if (typeof room._id.toString === "function") {
+      backendRoomId = room._id.toString();
+    } else if (room._id.$oid) {
+      backendRoomId = room._id.$oid;
+    } else {
+      backendRoomId = String(room._id);
+    }
+  }
+
+  // This is the id we use for socket rooms / UI
+  const roomId = backendRoomId || room.id || room.code;
+  const hasBackendRoom = !!backendRoomId;
 
   const currentUserName = displayName || user?.name || "Guest";
   const currentUserId = user?._id || user?.id || null;
-  const isGuest = !currentUserId;
+  const isGuest = !currentUserId; // (not used in logic, but kept if you need it later)
 
   const reactionUserId = currentUserId || `guest_${currentUserName || "Guest"}`;
   const reactionDisplayName = currentUserName || "Guest";
@@ -131,13 +146,13 @@ export default function RoomChat({ room, displayName }) {
     if (!roomId) return;
 
     const loadHistory = async () => {
-      if (!hasBackendRoom) {
+      if (!hasBackendRoom || !backendRoomId) {
         setMessages([]);
         return;
       }
       try {
         const res = await fetch(
-          `http://localhost:5000/api/rooms/${room._id}/messages`
+          `http://localhost:5000/api/rooms/${backendRoomId}/messages`
         );
         if (!res.ok) throw new Error("Failed to load");
         const data = await res.json();
@@ -198,7 +213,7 @@ export default function RoomChat({ room, displayName }) {
       }
     };
 
-    // 🔹 New: handle AI toggled event
+    // 🔹 handle AI toggled event
     const handleAiToggled = ({ roomId: changedId, allowAI }) => {
       if (changedId !== roomId) return;
       setAllowAI(!!allowAI);
@@ -220,7 +235,7 @@ export default function RoomChat({ room, displayName }) {
       socket.off("room_ai_toggled", handleAiToggled);
       socket.emit("leave_room", { roomId });
     };
-  }, [roomId, room._id, hasBackendRoom, currentUserName, roomThemeKey]);
+  }, [roomId, backendRoomId, hasBackendRoom, currentUserName, roomThemeKey]);
 
   const handleSend = async (e) => {
     e.preventDefault();

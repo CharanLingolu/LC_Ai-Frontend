@@ -152,7 +152,7 @@ export default function RoomChat({ room, displayName }) {
       }
       try {
         const res = await fetch(
-          `http://localhost:5000/api/rooms/${backendRoomId}/messages`
+          `https://lc-ai-backend-a080.onrender.com/api/rooms/${backendRoomId}/messages`
         );
         if (!res.ok) throw new Error("Failed to load");
         const data = await res.json();

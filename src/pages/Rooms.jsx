@@ -217,7 +217,7 @@ export default function Rooms() {
     const trimmed = code.trim();
     if (!trimmed) return;
 
-    socket.emit("verify_room_code", trimmed, (serverRoom) => {
+    socket.emit("verify_room_code", trimmed, async (serverRoom) => {
       if (!serverRoom) {
         alert("❌ Room not found! Check the code.");
         return;
@@ -226,14 +226,40 @@ export default function Rooms() {
       const roomName = serverRoom.name;
 
       if (isAuthenticated && user) {
-        // Logged-in join
-        const normalized = normalizeRoom(serverRoom);
-        setRooms((prev) => {
-          if (prev.some((r) => r.id === normalized.id)) return prev;
-          return [...prev, normalized];
-        });
-        setSelectedRoomId(normalized.id);
-        localStorage.setItem(GUEST_LAST_ROOM_KEY, normalized.id);
+        // 🔹 LOGGED-IN JOIN: also persist membership in DB using /api/rooms/join
+        try {
+          const res = await fetch("http://localhost:5000/api/rooms/join", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              code: trimmed,
+              userId: user._id || user.id,
+              userName: user.name,
+            }),
+          });
+
+          if (!res.ok) {
+            console.error("Join room failed:", await res.text());
+            alert("Failed to join room. Please try again.");
+            return;
+          }
+
+          const joinedRoom = await res.json();
+          const normalized = normalizeRoom(joinedRoom);
+
+          setRooms((prev) => {
+            if (prev.some((r) => r.id === normalized.id)) return prev;
+            return [...prev, normalized];
+          });
+
+          setSelectedRoomId(normalized.id);
+          localStorage.setItem(GUEST_LAST_ROOM_KEY, normalized.id);
+        } catch (err) {
+          console.error("Join room error:", err);
+          alert("Failed to join room. Please try again.");
+        }
       } else {
         // Guest / incognito
         const name = prompt(`Enter your name to join "${roomName}":`);

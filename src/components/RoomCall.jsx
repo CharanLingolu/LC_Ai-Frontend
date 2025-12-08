@@ -1,52 +1,32 @@
-// src/components/RoomCall.jsx
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { socket as callSocket } from "../socket";
 
-/**
- * TURN / STUN config
- *
- * IMPORTANT:
- *  - Replace YOUR_TURN_USERNAME / YOUR_TURN_PASSWORD with the values from
- *    the Metered dashboard (the "Username" and "Password" from your screenshot),
- *    OR better, define them in Vite env:
- *      VITE_TURN_USERNAME=...
- *      VITE_TURN_PASSWORD=...
- */
-const TURN_USERNAME =
-  import.meta.env.VITE_TURN_USERNAME || "08aee90ff5c8bfbd9615dbdd";
-const TURN_PASSWORD = import.meta.env.VITE_TURN_PASSWORD || "prTQoftILOTt6lR8";
+// 🔐 Replace these with the credentials from your TURN provider (e.g. Metered / Open Relay)
+const TURN_USERNAME = "08aee90ff5c8bfbd9615dbdd";
+const TURN_PASSWORD = "prTQoftlLOTt6lR8";
 
+// WebRTC ICE config: STUN + TURN
 const RTC_CONFIG = {
   iceServers: [
-    // Google STUN (free)
+    // Google STUN (for easy / same-network cases)
+    { urls: "stun:stun.l.google.com:19302" },
+
+    // TURN provider (example based on Metered / Open Relay docs)
     {
       urls: [
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-        "stun:stun2.l.google.com:19302",
+        "turn:global.relay.metered.ca:80",
+        "turn:global.relay.metered.ca:80?transport=tcp",
+        "turn:global.relay.metered.ca:443",
+        "turns:global.relay.metered.ca:443?transport=tcp",
       ],
-    },
-    // Metered TURN: replace creds above
-    {
-      urls: "turn:global.relay.metered.ca:80",
-      username: TURN_USERNAME,
-      credential: TURN_PASSWORD,
-    },
-    {
-      urls: "turn:global.relay.metered.ca:443",
-      username: TURN_USERNAME,
-      credential: TURN_PASSWORD,
-    },
-    {
-      urls: "turns:global.relay.metered.ca:443?transport=tcp",
       username: TURN_USERNAME,
       credential: TURN_PASSWORD,
     },
   ],
-  iceTransportPolicy: "all",
-  bundlePolicy: "balanced",
-  rtcpMuxPolicy: "require",
+  iceCandidatePoolSize: 10,
+  // 🔍 For debugging TURN only:
+  iceTransportPolicy: "relay", // <- uncomment TEMPORARILY to force TURN
 };
 
 export default function RoomCall({ room, displayName }) {
@@ -140,7 +120,7 @@ export default function RoomCall({ room, displayName }) {
   };
 
   const createPeerConnection = (peerId, isInitiator) => {
-    // cleanup any old PC first
+    // Clean up any existing PC for this peer
     if (peerConnectionsRef.current[peerId]) {
       try {
         peerConnectionsRef.current[peerId].close();
@@ -151,25 +131,13 @@ export default function RoomCall({ room, displayName }) {
     removeRemoteStream(peerId);
 
     const pc = new RTCPeerConnection(RTC_CONFIG);
-
-    // debug states
-    pc.oniceconnectionstatechange = () => {
-      console.log("[RTC] ICE state for", peerId, "=>", pc.iceConnectionState);
-    };
-    pc.onconnectionstatechange = () => {
-      console.log(
-        "[RTC] connection state for",
-        peerId,
-        "=>",
-        pc.connectionState
-      );
-    };
+    console.log("[RTC] created RTCPeerConnection for", peerId, RTC_CONFIG);
 
     const stream = localStreamRef.current;
     if (stream) {
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
-    } else {
-      console.warn("[RTC] createPeerConnection without localStream yet");
+      stream.getTracks().forEach((track) => {
+        pc.addTrack(track, stream);
+      });
     }
 
     pc.ontrack = (event) => {
@@ -179,22 +147,45 @@ export default function RoomCall({ room, displayName }) {
 
     pc.onicecandidate = (event) => {
       if (event.candidate) {
+        console.log(
+          "[RTC] local ICE candidate for",
+          peerId,
+          event.candidate.candidate
+        );
         callSocket.emit("webrtc_ice_candidate", {
           to: peerId,
           candidate: event.candidate,
         });
+      } else {
+        console.log("[RTC] all local ICE candidates sent for", peerId);
       }
+    };
+
+    pc.oniceconnectionstatechange = () => {
+      console.log("[RTC] ICE state for", peerId, "=>", pc.iceConnectionState);
+      // we do NOT auto-leave on "disconnected" because
+      // mobile networks can temporarily drop then recover
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log(
+        "[RTC] connection state for",
+        peerId,
+        "=>",
+        pc.connectionState
+      );
     };
 
     if (isInitiator) {
       pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() =>
+        .then(() => {
+          console.log("[RTC] sending offer to", peerId);
           callSocket.emit("webrtc_offer", {
             to: peerId,
             sdp: pc.localDescription,
-          })
-        )
+          });
+        })
         .catch((err) => console.error("Offer error:", err));
     }
 
@@ -205,15 +196,8 @@ export default function RoomCall({ room, displayName }) {
   // ---------- start / leave ----------
   const startCall = async () => {
     setError("");
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setError("getUserMedia is not supported in this browser.");
-      console.error("[RTC] getUserMedia not supported");
-      return;
-    }
-
     try {
-      console.log("[RTC] requesting camera/mic…");
+      console.log("[RTC] requesting getUserMedia...");
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
@@ -225,14 +209,14 @@ export default function RoomCall({ room, displayName }) {
       localStreamRef.current = stream;
       setLocalStream(stream);
 
-      // reset any old connections
+      // reset any old peer connections
       Object.values(peerConnectionsRef.current).forEach((pc) => pc.close());
       peerConnectionsRef.current = {};
       setRemoteStreams({});
       setPeerNames({});
       setParticipantCount(1);
 
-      console.log("[RTC] join_call", { roomId, currentUserName, isOwner });
+      console.log("[RTC] join_call emit for room", roomId);
       callSocket.emit("join_call", {
         roomId,
         isOwner,
@@ -245,20 +229,12 @@ export default function RoomCall({ room, displayName }) {
       setIncomingCall(null);
     } catch (err) {
       console.error("getUserMedia error:", err);
-      if (err.name === "NotAllowedError" || err.name === "SecurityError") {
-        setError(
-          "Permissions blocked. Please allow camera & microphone for this site."
-        );
-      } else if (err.name === "NotFoundError") {
-        setError("No camera/microphone found on this device.");
-      } else {
-        setError("Unable to access camera/mic. Please check permissions.");
-      }
+      setError("Unable to access camera/mic. Please check permissions.");
     }
   };
 
   const leaveCall = () => {
-    console.log("[RTC] leaveCall");
+    console.log("[RTC] leave_call for room", roomId);
     setInCall(false);
     setParticipantCount(0);
     setFullscreen(false);
@@ -301,7 +277,7 @@ export default function RoomCall({ room, displayName }) {
     if (!roomId) return;
 
     const handleExistingPeers = ({ peers, participantCount }) => {
-      console.log("[RTC] existing_peers", peers);
+      console.log("[RTC] existing_peers", peers, "count", participantCount);
       setParticipantCount(participantCount || 1);
 
       setPeerNames((prev) => {
@@ -332,7 +308,7 @@ export default function RoomCall({ room, displayName }) {
       participantCount,
     }) => {
       const label = name || displayName || "User";
-      console.log("[RTC] user_joined_call", peerId, label);
+      console.log("[RTC] user_joined_call", peerId, label, participantCount);
       setParticipantCount(participantCount || 1);
       setPeerNames((prev) => ({ ...prev, [peerId]: label }));
       createPeerConnection(peerId, false);
@@ -375,6 +351,11 @@ export default function RoomCall({ room, displayName }) {
       const pc = peerConnectionsRef.current[from];
       if (pc && candidate) {
         try {
+          console.log(
+            "[RTC] remote ICE candidate for",
+            from,
+            candidate.candidate
+          );
           await pc.addIceCandidate(new RTCIceCandidate(candidate));
         } catch (err) {
           console.error("Error adding ICE candidate", err);
@@ -401,15 +382,15 @@ export default function RoomCall({ room, displayName }) {
     };
 
     const handleCallStarted = ({ roomId: startedRoomId, startedBy }) => {
-      console.log("[RTC] call_started in", startedRoomId);
       if (String(startedRoomId) === String(roomId) && !inCall) {
+        console.log("[RTC] call_started by", startedBy);
         setIncomingCall({ startedBy });
       }
     };
 
     const handleCallEnded = ({ roomId: endedRoomId }) => {
-      console.log("[RTC] call_ended in", endedRoomId);
       if (String(endedRoomId) !== String(roomId)) return;
+      console.log("[RTC] call ended");
       leaveCall();
     };
 
@@ -438,15 +419,6 @@ export default function RoomCall({ room, displayName }) {
   const renderFullscreen = () => {
     if (!fullscreen || !inCall) return null;
 
-    const remoteCount = Object.keys(remoteStreams).length;
-    const totalTiles = 1 + remoteCount;
-
-    // choose grid columns based on number of participants
-    let gridCols = "grid-cols-1";
-    if (totalTiles === 2) gridCols = "grid-cols-1 sm:grid-cols-2";
-    else if (totalTiles <= 4) gridCols = "grid-cols-2 sm:grid-cols-2";
-    else gridCols = "grid-cols-2 sm:grid-cols-3";
-
     return (
       <div className="fixed inset-0 z-50 bg-black flex flex-col">
         {/* Top bar */}
@@ -454,7 +426,7 @@ export default function RoomCall({ room, displayName }) {
           <div>
             <div className="font-semibold text-sm">Room Call – {room.name}</div>
             <div className="text-xs text-gray-400">
-              In call: {participantCount || totalTiles}
+              In call: {participantCount || 1}
             </div>
           </div>
           <div className="flex gap-2">
@@ -489,11 +461,11 @@ export default function RoomCall({ room, displayName }) {
           </div>
         </div>
 
-        {/* All videos in one responsive grid */}
-        <div className="flex-1 p-2 sm:p-4">
-          <div className={`grid gap-2 sm:gap-4 ${gridCols} h-full`}>
+        {/* All videos in one grid: local + remotes */}
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
             {/* Local tile */}
-            <div className="relative rounded-lg overflow-hidden bg-gray-800 ring-1 ring-gray-700 flex items-center justify-center">
+            <div className="flex flex-col h-full relative rounded-lg overflow-hidden bg-gray-800 ring-1 ring-gray-700">
               <video
                 ref={localVideoRef}
                 autoPlay
@@ -530,7 +502,7 @@ export default function RoomCall({ room, displayName }) {
     );
   };
 
-  // ---------- compact main UI ----------
+  // ---------- compact main UI (no big black block) ----------
   return (
     <>
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
@@ -699,7 +671,7 @@ function RemoteVideo({ stream, name }) {
     }
   }, [stream]);
   return (
-    <div className="relative rounded-lg overflow-hidden bg-black ring-1 ring-gray-700 flex items-center justify-center">
+    <div className="relative rounded-lg overflow-hidden bg-black ring-1 ring-gray-700">
       <video
         ref={videoRef}
         autoPlay

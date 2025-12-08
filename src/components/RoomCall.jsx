@@ -3,13 +3,13 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { socket as callSocket } from "../socket";
 
-// ⚠️ Replace username/credential with your Metered TURN values if needed
+// ⚠️ Keep your own Metered TURN credentials here
 const RTC_CONFIG = {
   iceServers: [
-    // Backup STUN
+    // STUN
     { urls: "stun:stun.l.google.com:19302" },
 
-    // TURN (example – keep your own username/credential)
+    // TURN (Metered example)
     {
       urls: [
         "stun:global.relay.metered.ca:80",
@@ -17,8 +17,8 @@ const RTC_CONFIG = {
         "turn:global.relay.metered.ca:443",
         "turns:global.relay.metered.ca:443?transport=tcp",
       ],
-      username: "08aee90ff5c8bfbd9615dbbd",
-      credential: "prTQoftLLOTt6lR8",
+      username: "08aee90ff5c8bfbd9615dbbd", // <--- your username
+      credential: "prTQoftLLOTt6lR8", // <--- your password
     },
   ],
   iceTransportPolicy: "all",
@@ -90,13 +90,12 @@ export default function RoomCall({ room, displayName }) {
 
   const [peerNames, setPeerNames] = useState({}); // peerId -> name
 
-  // simple responsive flag for fullscreen layout
   const [isSmallScreen, setIsSmallScreen] = useState(false);
 
   useEffect(() => {
     const updateSize = () => {
       if (typeof window !== "undefined") {
-        setIsSmallScreen(window.innerWidth < 640); // tailwind "sm"
+        setIsSmallScreen(window.innerWidth < 640);
       }
     };
     updateSize();
@@ -116,6 +115,7 @@ export default function RoomCall({ room, displayName }) {
 
   // ---------- helpers ----------
   const addRemoteStream = (peerId, stream) => {
+    console.log("[RTC] got remote stream from", peerId, stream);
     setRemoteStreams((prev) => ({ ...prev, [peerId]: stream }));
   };
 
@@ -137,14 +137,23 @@ export default function RoomCall({ room, displayName }) {
 
     removeRemoteStream(peerId);
 
+    console.log("[RTC] creating peer connection for", peerId);
     const pc = new RTCPeerConnection(RTC_CONFIG);
 
     const stream = localStreamRef.current;
     if (stream) {
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
+      stream.getTracks().forEach((track) => {
+        console.log("[RTC] adding local track", track.kind, "to", peerId);
+        pc.addTrack(track, stream);
+      });
     }
 
+    pc.oniceconnectionstatechange = () => {
+      console.log("[RTC] ICE state for", peerId, "=>", pc.iceConnectionState);
+    };
+
     pc.ontrack = (event) => {
+      console.log("[RTC] ontrack from", peerId, event.streams[0]);
       addRemoteStream(peerId, event.streams[0]);
     };
 
@@ -160,12 +169,12 @@ export default function RoomCall({ room, displayName }) {
     if (isInitiator) {
       pc.createOffer()
         .then((offer) => pc.setLocalDescription(offer))
-        .then(() =>
+        .then(() => {
           callSocket.emit("webrtc_offer", {
             to: peerId,
             sdp: pc.localDescription,
-          })
-        )
+          });
+        })
         .catch((err) => console.error("Offer error:", err));
     }
 
@@ -176,11 +185,20 @@ export default function RoomCall({ room, displayName }) {
   // ---------- start / leave ----------
   const startCall = async () => {
     setError("");
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setError("getUserMedia is not supported in this browser.");
+      console.error("[RTC] getUserMedia not available");
+      return;
+    }
+
     try {
+      console.log("[RTC] requesting camera+mic…");
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true,
       });
+      console.log("[RTC] got local media stream", stream);
 
       // start with camera off
       stream.getVideoTracks().forEach((t) => (t.enabled = false));
@@ -206,7 +224,31 @@ export default function RoomCall({ room, displayName }) {
       setIncomingCall(null);
     } catch (err) {
       console.error("getUserMedia error:", err);
-      setError("Unable to access camera/mic. Please check permissions.");
+
+      let msg = "Unable to access camera/mic. Please check permissions.";
+
+      if (
+        err.name === "NotAllowedError" ||
+        err.name === "PermissionDeniedError"
+      ) {
+        msg =
+          "You blocked camera/mic access. Please allow it in the browser permission popup (lock icon near the URL) and try again.";
+      } else if (
+        err.name === "NotFoundError" ||
+        err.name === "DevicesNotFoundError"
+      ) {
+        msg = "No camera or microphone was found on this device.";
+      } else if (
+        err.name === "NotReadableError" ||
+        err.name === "TrackStartError"
+      ) {
+        msg =
+          "Your camera or microphone is being used by another app. Close other apps using the camera/mic and try again.";
+      } else if (err.name === "OverconstrainedError") {
+        msg = "Your device cannot satisfy the requested media constraints.";
+      }
+
+      setError(msg);
     }
   };
 
@@ -253,6 +295,7 @@ export default function RoomCall({ room, displayName }) {
     if (!roomId) return;
 
     const handleExistingPeers = ({ peers, participantCount }) => {
+      console.log("[RTC] existing peers", peers);
       setParticipantCount(participantCount || 1);
 
       setPeerNames((prev) => {
@@ -283,12 +326,14 @@ export default function RoomCall({ room, displayName }) {
       participantCount,
     }) => {
       const label = name || displayName || "User";
+      console.log("[RTC] user joined call", peerId, label);
       setParticipantCount(participantCount || 1);
       setPeerNames((prev) => ({ ...prev, [peerId]: label }));
       createPeerConnection(peerId, false);
     };
 
     const handleOffer = async ({ from, sdp }) => {
+      console.log("[RTC] received offer from", from);
       let pc = peerConnectionsRef.current[from];
       if (!pc) {
         pc = createPeerConnection(from, false);
@@ -309,6 +354,7 @@ export default function RoomCall({ room, displayName }) {
     };
 
     const handleAnswer = async ({ from, sdp }) => {
+      console.log("[RTC] received answer from", from);
       const pc = peerConnectionsRef.current[from];
       if (!pc) return;
 
@@ -331,6 +377,7 @@ export default function RoomCall({ room, displayName }) {
     };
 
     const handleUserLeft = ({ peerId, participantCount }) => {
+      console.log("[RTC] user left call", peerId);
       peerConnectionsRef.current[peerId]?.close();
       delete peerConnectionsRef.current[peerId];
       removeRemoteStream(peerId);
@@ -349,12 +396,14 @@ export default function RoomCall({ room, displayName }) {
 
     const handleCallStarted = ({ roomId: startedRoomId, startedBy }) => {
       if (String(startedRoomId) === String(roomId) && !inCall) {
+        console.log("[RTC] call started by", startedBy);
         setIncomingCall({ startedBy });
       }
     };
 
     const handleCallEnded = ({ roomId: endedRoomId }) => {
       if (String(endedRoomId) !== String(roomId)) return;
+      console.log("[RTC] call ended");
       leaveCall();
     };
 
@@ -385,9 +434,8 @@ export default function RoomCall({ room, displayName }) {
 
     const remoteEntries = Object.entries(remoteStreams);
     const remoteCount = remoteEntries.length;
-    const totalParticipants = 1 + remoteCount; // local + remotes
+    const totalParticipants = 1 + remoteCount;
 
-    // Dynamic grid: up to 4 tiles, try to fit them all on screen
     let cols = 1;
     let rows = 1;
 
@@ -397,16 +445,15 @@ export default function RoomCall({ room, displayName }) {
     } else if (totalParticipants === 2) {
       if (isSmallScreen) {
         cols = 1;
-        rows = 2; // stacked on tiny screens
+        rows = 2;
       } else {
         cols = 2;
-        rows = 1; // side-by-side on bigger screens
+        rows = 1;
       }
     } else if (totalParticipants <= 4) {
       cols = 2;
-      rows = 2; // 2x2 grid for 3–4
+      rows = 2;
     } else {
-      // Fallback if more than 4 (still works, might scroll)
       cols = isSmallScreen ? 2 : 3;
       rows = Math.ceil(totalParticipants / cols);
     }
@@ -500,7 +547,7 @@ export default function RoomCall({ room, displayName }) {
     );
   };
 
-  // ---------- compact main UI (no big black block) ----------
+  // ---------- compact main UI ----------
   return (
     <>
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">

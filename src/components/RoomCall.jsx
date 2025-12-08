@@ -1,18 +1,16 @@
+// src/components/RoomCall.jsx
 import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { socket as callSocket } from "../socket";
 
-// 🔐 Replace these with the credentials from your TURN provider (e.g. Metered / Open Relay)
+// 🔐 Replace these with the credentials from your TURN provider
 const TURN_USERNAME = "08aee90ff5c8bfbd9615dbdd";
 const TURN_PASSWORD = "prTQoftlLOTt6lR8";
 
 // WebRTC ICE config: STUN + TURN
 const RTC_CONFIG = {
   iceServers: [
-    // Google STUN (for easy / same-network cases)
     { urls: "stun:stun.l.google.com:19302" },
-
-    // TURN provider (example based on Metered / Open Relay docs)
     {
       urls: [
         "turn:global.relay.metered.ca:80",
@@ -25,8 +23,8 @@ const RTC_CONFIG = {
     },
   ],
   iceCandidatePoolSize: 10,
-  // 🔍 For debugging TURN only:
-  iceTransportPolicy: "relay", // <- uncomment TEMPORARILY to force TURN
+  // For debugging TURN-only:
+  // iceTransportPolicy: "relay",
 };
 
 export default function RoomCall({ room, displayName }) {
@@ -94,6 +92,10 @@ export default function RoomCall({ room, displayName }) {
   const [fullscreen, setFullscreen] = useState(false);
 
   const [peerNames, setPeerNames] = useState({}); // peerId -> name
+
+  // 🔁 camera switching state
+  const [videoDevices, setVideoDevices] = useState([]); // list of videoinput devices
+  const [activeVideoDeviceId, setActiveVideoDeviceId] = useState(null);
 
   const isOwner = user?.email && room.ownerId === user.email;
   const currentUserName = displayName || user?.name || "User";
@@ -163,8 +165,6 @@ export default function RoomCall({ room, displayName }) {
 
     pc.oniceconnectionstatechange = () => {
       console.log("[RTC] ICE state for", peerId, "=>", pc.iceConnectionState);
-      // we do NOT auto-leave on "disconnected" because
-      // mobile networks can temporarily drop then recover
     };
 
     pc.onconnectionstatechange = () => {
@@ -193,18 +193,60 @@ export default function RoomCall({ room, displayName }) {
     return pc;
   };
 
+  // 🔎 helper: load available video devices (front/back)
+  const loadVideoDevices = async () => {
+    if (!navigator.mediaDevices?.enumerateDevices) return;
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videos = devices.filter((d) => d.kind === "videoinput");
+      setVideoDevices(videos);
+
+      // if we don't have an active id, pick first available
+      if (!activeVideoDeviceId && videos[0]?.deviceId) {
+        setActiveVideoDeviceId(videos[0].deviceId);
+      }
+    } catch (err) {
+      console.warn("Could not enumerate devices:", err);
+    }
+  };
+
   // ---------- start / leave ----------
   const startCall = async () => {
     setError("");
     try {
       console.log("[RTC] requesting getUserMedia...");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: true,
-        audio: true,
-      });
+
+      // If we already know which camera to use, try that; otherwise generic
+      let constraints;
+      if (activeVideoDeviceId) {
+        constraints = {
+          video: { deviceId: { exact: activeVideoDeviceId } },
+          audio: true,
+        };
+      } else {
+        // facingMode helps mobile pick front cam first
+        constraints = {
+          video: { facingMode: "user" },
+          audio: true,
+        };
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
 
       // start with camera off
       stream.getVideoTracks().forEach((t) => (t.enabled = false));
+
+      // detect which device we actually got
+      const videoTrack = stream.getVideoTracks()[0];
+      if (videoTrack) {
+        const settings = videoTrack.getSettings();
+        if (settings?.deviceId) {
+          setActiveVideoDeviceId(settings.deviceId);
+        }
+      }
+
+      // load list of devices (after permission is granted)
+      loadVideoDevices();
 
       localStreamRef.current = stream;
       setLocalStream(stream);
@@ -270,6 +312,96 @@ export default function RoomCall({ room, displayName }) {
     const newOff = !isCameraOff;
     stream.getVideoTracks().forEach((t) => (t.enabled = !newOff));
     setIsCameraOff(newOff);
+  };
+
+  // 🔁 Flip / reverse camera (front <-> back) on mobile
+  const switchCameraDevice = async () => {
+    if (!inCall) return;
+    if (!navigator.mediaDevices?.getUserMedia) return;
+
+    // Need at least 2 cameras to make this meaningful
+    if (!videoDevices || videoDevices.length < 2) {
+      alert("No second camera found on this device.");
+      return;
+    }
+
+    try {
+      // Ensure we know current device
+      let currentId = activeVideoDeviceId;
+      if (!currentId && localStreamRef.current) {
+        const track = localStreamRef.current.getVideoTracks()[0];
+        const settings = track?.getSettings();
+        currentId = settings?.deviceId || null;
+      }
+
+      const currentIndex = videoDevices.findIndex(
+        (d) => d.deviceId === currentId
+      );
+      const nextIndex =
+        currentIndex >= 0 ? (currentIndex + 1) % videoDevices.length : 0;
+      const nextDevice = videoDevices[nextIndex];
+
+      if (!nextDevice?.deviceId) {
+        alert("Could not find alternate camera.");
+        return;
+      }
+
+      console.log(
+        "[RTC] switching camera from",
+        currentId,
+        "to",
+        nextDevice.deviceId
+      );
+
+      // Get new stream from the other camera
+      const newStream = await navigator.mediaDevices.getUserMedia({
+        video: { deviceId: { exact: nextDevice.deviceId } },
+        audio: true, // include audio too (or you can keep old audio if you want)
+      });
+
+      const newVideoTrack = newStream.getVideoTracks()[0];
+      const newAudioTrack = newStream.getAudioTracks()[0];
+
+      if (!newVideoTrack) {
+        console.warn("No video track from new camera");
+        return;
+      }
+
+      // Replace tracks in existing peer connections (no full renegotiation)
+      Object.values(peerConnectionsRef.current).forEach((pc) => {
+        pc.getSenders().forEach((sender) => {
+          if (sender.track?.kind === "video" && newVideoTrack) {
+            sender
+              .replaceTrack(newVideoTrack)
+              .catch((err) =>
+                console.error("Error replacing video track:", err)
+              );
+          }
+          if (sender.track?.kind === "audio" && newAudioTrack) {
+            sender
+              .replaceTrack(newAudioTrack)
+              .catch((err) =>
+                console.error("Error replacing audio track:", err)
+              );
+          }
+        });
+      });
+
+      // Stop old stream
+      if (localStreamRef.current) {
+        localStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+
+      localStreamRef.current = newStream;
+      setLocalStream(newStream);
+      setActiveVideoDeviceId(nextDevice.deviceId);
+      setIsCameraOff(false); // when switching, assume we turn it on
+
+      console.log("[RTC] camera switched successfully");
+    } catch (err) {
+      console.error("Error switching camera:", err);
+      setError("Failed to switch camera. Please try again.");
+    }
   };
 
   // ---------- socket wiring ----------
@@ -446,6 +578,13 @@ export default function RoomCall({ room, displayName }) {
             >
               {isCameraOff ? "Start Video" : "Stop Video"}
             </button>
+            {/* 🔁 Flip camera button (fullscreen) */}
+            <button
+              onClick={switchCameraDevice}
+              className="px-3 py-1 rounded text-xs bg-gray-700 hover:bg-gray-600"
+            >
+              🔁 Flip
+            </button>
             <button
               onClick={() => setFullscreen(false)}
               className="px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 text-xs"
@@ -502,7 +641,7 @@ export default function RoomCall({ room, displayName }) {
     );
   };
 
-  // ---------- compact main UI (no big black block) ----------
+  // ---------- compact main UI ----------
   return (
     <>
       <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
@@ -553,6 +692,14 @@ export default function RoomCall({ room, displayName }) {
                   title="Toggle Camera"
                 >
                   {isCameraOff ? "📷❌" : "📷"}
+                </button>
+                {/* 🔁 Flip button (compact mode) */}
+                <button
+                  onClick={switchCameraDevice}
+                  className="p-1.5 rounded-md text-xs bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-700"
+                  title="Flip camera"
+                >
+                  🔁
                 </button>
                 <button
                   onClick={() => setFullscreen(true)}

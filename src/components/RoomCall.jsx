@@ -4,8 +4,8 @@ import { useAuth } from "../context/AuthContext";
 import { socket as callSocket } from "../socket";
 
 // 🔐 Replace these with the credentials from your TURN provider
-const TURN_USERNAME = "08aee90ff5c8bfbd9615dbdd";
-const TURN_PASSWORD = "prTQoftlLOTt6lR8";
+const TURN_USERNAME = "a96a41509b2176154a7b0365";
+const TURN_PASSWORD = "bsCzj5agcAAjSCI6";
 
 // WebRTC ICE config: STUN + TURN
 const RTC_CONFIG = {

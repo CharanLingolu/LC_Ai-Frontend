@@ -6,18 +6,41 @@ const API_BASE_URL =
 
 /**
  * Call LC_Ai backend
+ *
  * @param {string} mode - "friend" | "prompt_engineer" | "text_tools" | "room" | ...
  * @param {Array<{role: string, content: string}>} messages
- * @param {string|null} token - optional JWT
+ * @param {string|object} [options] - either:
+ *    - token string (old style), OR
+ *    - { token?: string, roomId?: string, ...extraBody }
  */
-export async function callLCai(mode, messages, token) {
+export async function callLCai(mode, messages, options) {
+  let token;
+  let extraBody = {};
+
+  // Backward compatibility:
+  //   callLCai(mode, messages, "jwt-token-string")
+  if (typeof options === "string") {
+    token = options;
+  } else if (options && typeof options === "object") {
+    // New style:
+    //   callLCai(mode, messages, { token, roomId, ... })
+    token = options.token;
+    // copy all fields except token into request body
+    const { token: _ignoredToken, ...rest } = options;
+    extraBody = rest;
+  }
+
   const res = await fetch(`${API_BASE_URL}/api/chat`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
-    body: JSON.stringify({ mode, messages }),
+    body: JSON.stringify({
+      mode,
+      messages,
+      ...extraBody, // e.g. { roomId }
+    }),
   });
 
   let data;

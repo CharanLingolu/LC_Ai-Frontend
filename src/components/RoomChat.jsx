@@ -216,7 +216,22 @@ export default function RoomChat({ room, displayName }) {
     // 🔹 handle AI toggled event
     const handleAiToggled = ({ roomId: changedId, allowAI }) => {
       if (changedId !== roomId) return;
+
       setAllowAI(!!allowAI);
+
+      // Show a system message inside chat when AI switches ON/OFF
+      setMessages((prev) => [
+        ...prev,
+        {
+          _id: `sys-toggle-${Date.now()}`,
+          role: "system",
+          text: allowAI
+            ? "🤖 AI assistant has been enabled by the owner."
+            : "🚫 The owner has turned off AI.",
+          senderGuestName: "System",
+          createdAt: new Date().toISOString(),
+        },
+      ]);
     };
 
     socket.on("receive_message", handleReceive);
@@ -268,7 +283,9 @@ export default function RoomChat({ room, displayName }) {
           content: `${currentUserName}: ${text}`,
         });
 
-        const aiReply = await callLCai("room", historyForAI);
+        const aiReply = await callLCai("room", historyForAI, {
+          roomId: backendRoomId || roomId, // <-- IMPORTANT
+        });
 
         const aiPayload = {
           roomId,
@@ -281,12 +298,21 @@ export default function RoomChat({ room, displayName }) {
         socket.emit("send_message", aiPayload);
       } catch (err) {
         console.error("AI Error:", err);
+
+        let message = "⚠️ AI is currently overloaded.";
+
+        // If backend blocked request because owner disabled AI
+        if (err.message.includes("AI is disabled")) {
+          message = "🚫 AI is disabled by the room owner.";
+        }
+
         setMessages((prev) => [
           ...(Array.isArray(prev) ? prev : []),
           {
-            _id: `err-${Date.now()}`,
+            _id: `sys-${Date.now()}`,
             role: "system",
-            text: "⚠️ AI is currently overloaded.",
+            text: message,
+            senderGuestName: "System",
             createdAt: new Date().toISOString(),
           },
         ]);

@@ -102,6 +102,17 @@ export default function Rooms() {
           }
           return room;
         });
+
+        // 🔹 Persist latest room state (including allowAI) for this user/guest
+        if (isAuthenticated && user?.email) {
+          const key = getUserRoomsKey(user.email);
+          if (key) {
+            localStorage.setItem(key, JSON.stringify(withPresence));
+          }
+        } else if (isGuest) {
+          localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(withPresence));
+        }
+
         return withPresence;
       });
 
@@ -189,6 +200,32 @@ export default function Rooms() {
       );
     });
 
+    const handleRoomAIToggled = ({ roomId, allowAI }) => {
+      setRooms((prev) => {
+        const updated = prev.map((room) => {
+          const matches =
+            room.id === roomId ||
+            String(room._id) === String(roomId) ||
+            String(room.code) === String(roomId);
+          return matches ? { ...room, allowAI } : room;
+        });
+
+        // Persist updated allowAI to localStorage
+        if (isAuthenticated && user?.email) {
+          const key = getUserRoomsKey(user.email);
+          if (key) {
+            localStorage.setItem(key, JSON.stringify(updated));
+          }
+        } else if (isGuest) {
+          localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(updated));
+        }
+
+        return updated;
+      });
+    };
+
+    socket.on("room_ai_toggled", handleRoomAIToggled);
+
     if (isAuthenticated && user) {
       socket.emit("register_user", {
         userId: user._id || user.id,
@@ -216,6 +253,7 @@ export default function Rooms() {
       socket.off("guest_joined_success", handleGuestSuccess);
       socket.off("room_create_failed", handleRoomCreateFailed);
       socket.off("active_users_update");
+      socket.off("room_ai_toggled", handleRoomAIToggled);
     };
   }, [isAuthenticated, isGuest, user, setRooms, pendingRoomCode]);
 

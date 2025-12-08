@@ -3,8 +3,25 @@ import { useEffect, useRef, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { socket as callSocket } from "../socket";
 
+// ⚠️ Replace username/credential with your Metered TURN values if needed
 const RTC_CONFIG = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  iceServers: [
+    // Backup STUN
+    { urls: "stun:stun.l.google.com:19302" },
+
+    // TURN (example – keep your own username/credential)
+    {
+      urls: [
+        "stun:global.relay.metered.ca:80",
+        "turn:global.relay.metered.ca:80",
+        "turn:global.relay.metered.ca:443",
+        "turns:global.relay.metered.ca:443?transport=tcp",
+      ],
+      username: "08aee90ff5c8bfbd9615dbbd",
+      credential: "prTQoftLLOTt6lR8",
+    },
+  ],
+  iceTransportPolicy: "all",
 };
 
 export default function RoomCall({ room, displayName }) {
@@ -72,6 +89,20 @@ export default function RoomCall({ room, displayName }) {
   const [fullscreen, setFullscreen] = useState(false);
 
   const [peerNames, setPeerNames] = useState({}); // peerId -> name
+
+  // simple responsive flag for fullscreen layout
+  const [isSmallScreen, setIsSmallScreen] = useState(false);
+
+  useEffect(() => {
+    const updateSize = () => {
+      if (typeof window !== "undefined") {
+        setIsSmallScreen(window.innerWidth < 640); // tailwind "sm"
+      }
+    };
+    updateSize();
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
+  }, []);
 
   const isOwner = user?.email && room.ownerId === user.email;
   const currentUserName = displayName || user?.name || "User";
@@ -349,9 +380,36 @@ export default function RoomCall({ room, displayName }) {
   }, [roomId, isOwner, inCall]);
 
   // ---------- fullscreen ----------
-  // ---------- fullscreen ----------
   const renderFullscreen = () => {
     if (!fullscreen || !inCall) return null;
+
+    const remoteEntries = Object.entries(remoteStreams);
+    const remoteCount = remoteEntries.length;
+    const totalParticipants = 1 + remoteCount; // local + remotes
+
+    // Dynamic grid: up to 4 tiles, try to fit them all on screen
+    let cols = 1;
+    let rows = 1;
+
+    if (totalParticipants === 1) {
+      cols = 1;
+      rows = 1;
+    } else if (totalParticipants === 2) {
+      if (isSmallScreen) {
+        cols = 1;
+        rows = 2; // stacked on tiny screens
+      } else {
+        cols = 2;
+        rows = 1; // side-by-side on bigger screens
+      }
+    } else if (totalParticipants <= 4) {
+      cols = 2;
+      rows = 2; // 2x2 grid for 3–4
+    } else {
+      // Fallback if more than 4 (still works, might scroll)
+      cols = isSmallScreen ? 2 : 3;
+      rows = Math.ceil(totalParticipants / cols);
+    }
 
     return (
       <div className="fixed inset-0 z-50 bg-black flex flex-col">
@@ -360,7 +418,7 @@ export default function RoomCall({ room, displayName }) {
           <div>
             <div className="font-semibold text-sm">Room Call – {room.name}</div>
             <div className="text-xs text-gray-400">
-              In call: {participantCount || 1}
+              In call: {participantCount || totalParticipants}
             </div>
           </div>
           <div className="flex gap-2">
@@ -395,11 +453,17 @@ export default function RoomCall({ room, displayName }) {
           </div>
         </div>
 
-        {/* All videos in one grid: local + remotes */}
-        <div className="flex-1 overflow-y-auto p-4">
-          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+        {/* All videos in one responsive grid */}
+        <div className="flex-1 p-3 sm:p-4 flex items-center justify-center">
+          <div
+            className="grid gap-3 sm:gap-4 w-full h-full max-w-5xl mx-auto"
+            style={{
+              gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
+              gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+            }}
+          >
             {/* Local tile */}
-            <div className="flex flex-col h-full relative rounded-lg overflow-hidden bg-gray-800 ring-1 ring-gray-700">
+            <div className="relative w-full h-full rounded-lg overflow-hidden bg-gray-800 ring-1 ring-gray-700">
               <video
                 ref={localVideoRef}
                 autoPlay
@@ -410,7 +474,7 @@ export default function RoomCall({ room, displayName }) {
                 }`}
               />
               {isCameraOff && (
-                <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                <div className="absolute inset-0 flex items-center justify-center text-gray-400">
                   <div className="flex flex-col items-center">
                     <span className="text-4xl mb-2">📷</span>
                     <span className="text-xs">Camera is Off</span>
@@ -423,7 +487,7 @@ export default function RoomCall({ room, displayName }) {
             </div>
 
             {/* Remote tiles */}
-            {Object.entries(remoteStreams).map(([peerId, stream]) => (
+            {remoteEntries.map(([peerId, stream]) => (
               <RemoteVideo
                 key={peerId}
                 stream={stream}
@@ -605,7 +669,7 @@ function RemoteVideo({ stream, name }) {
     }
   }, [stream]);
   return (
-    <div className="relative rounded-lg overflow-hidden bg-black ring-1 ring-gray-700">
+    <div className="relative w-full h-full rounded-lg overflow-hidden bg-black ring-1 ring-gray-700">
       <video
         ref={videoRef}
         autoPlay

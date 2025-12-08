@@ -349,11 +349,13 @@ export default function RoomCall({ room, displayName }) {
   }, [roomId, isOwner, inCall]);
 
   // ---------- fullscreen ----------
+  // ---------- fullscreen ----------
   const renderFullscreen = () => {
     if (!fullscreen || !inCall) return null;
 
     return (
       <div className="fixed inset-0 z-50 bg-black flex flex-col">
+        {/* Top bar */}
         <div className="flex items-center justify-between px-4 py-3 bg-gray-900 text-white border-b border-gray-800">
           <div>
             <div className="font-semibold text-sm">Room Call – {room.name}</div>
@@ -393,47 +395,41 @@ export default function RoomCall({ room, displayName }) {
           </div>
         </div>
 
-        <div className="flex-1 grid gap-4 p-4 grid-cols-1 md:grid-cols-2 overflow-y-auto">
-          {/* local video */}
-          <div className="flex flex-col h-full relative rounded-lg overflow-hidden bg-gray-800 ring-1 ring-gray-700">
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-[40vh] md:h-full object-cover ${
-                isCameraOff ? "hidden" : "block"
-              }`}
-            />
-            {isCameraOff && (
-              <div className="absolute inset-0 flex items-center justify-center text-gray-500">
-                <div className="flex flex-col items-center">
-                  <span className="text-4xl mb-2">📷</span>
-                  <span className="text-xs">Camera is Off</span>
-                </div>
-              </div>
-            )}
-            <div className="absolute bottom-2 left-2 bg-black/60 text-white px-2 py-0.5 rounded text-xs">
-              You
-            </div>
-          </div>
-
-          {/* remote videos */}
-          <div className="flex flex-col h-full">
-            <div className="flex-1 grid gap-2 grid-cols-1 sm:grid-cols-2 content-start">
-              {Object.entries(remoteStreams).map(([peerId, stream]) => (
-                <RemoteVideo
-                  key={peerId}
-                  stream={stream}
-                  name={peerNames[peerId]}
-                />
-              ))}
-              {Object.keys(remoteStreams).length === 0 && (
-                <div className="text-xs text-gray-400 border border-dashed border-gray-700 rounded-lg flex items-center justify-center h-[40vh] md:h-40">
-                  Waiting for others...
+        {/* All videos in one grid: local + remotes */}
+        <div className="flex-1 overflow-y-auto p-4">
+          <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+            {/* Local tile */}
+            <div className="flex flex-col h-full relative rounded-lg overflow-hidden bg-gray-800 ring-1 ring-gray-700">
+              <video
+                ref={localVideoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover ${
+                  isCameraOff ? "hidden" : "block"
+                }`}
+              />
+              {isCameraOff && (
+                <div className="absolute inset-0 flex items-center justify-center text-gray-500">
+                  <div className="flex flex-col items-center">
+                    <span className="text-4xl mb-2">📷</span>
+                    <span className="text-xs">Camera is Off</span>
+                  </div>
                 </div>
               )}
+              <div className="absolute bottom-2 left-2 bg-black/60 text-white px-2 py-0.5 rounded text-xs">
+                You
+              </div>
             </div>
+
+            {/* Remote tiles */}
+            {Object.entries(remoteStreams).map(([peerId, stream]) => (
+              <RemoteVideo
+                key={peerId}
+                stream={stream}
+                name={peerNames[peerId]}
+              />
+            ))}
           </div>
         </div>
       </div>
@@ -609,12 +605,12 @@ function RemoteVideo({ stream, name }) {
     }
   }, [stream]);
   return (
-    <div className="relative rounded-lg overflow-hidden bg-black">
+    <div className="relative rounded-lg overflow-hidden bg-black ring-1 ring-gray-700">
       <video
         ref={videoRef}
         autoPlay
         playsInline
-        className="w-full h-[40vh] md:h-40 object-cover"
+        className="w-full h-full object-cover"
       />
       <div className="absolute bottom-2 left-2 bg-black/60 text-white px-2 py-0.5 rounded text-xs">
         {name ? `User: ${name}` : "User"}

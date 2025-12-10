@@ -3,72 +3,47 @@ import { useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { socket as callSocket } from "../socket";
 
-// 🚀 Stream Video React SDK
 import {
   StreamVideoClient,
   StreamVideo,
   StreamCall,
-  StreamTheme,
-  CallControls,
   SpeakerLayout,
+  ToggleAudioPublishingButton,
+  ToggleVideoPublishingButton,
+  CancelCallButton,
+  ScreenShareButton,
+  CallParticipantsList,
 } from "@stream-io/video-react-sdk";
-import "@stream-io/video-react-sdk/dist/css/styles.css";
 
-// 👉 Your Stream API key (Frontend)
+import "@stream-io/video-react-sdk/dist/css/styles.css";
+import "../index.css";
+
 const STREAM_API_KEY = import.meta.env.VITE_STREAM_API_KEY;
-// 👉 Your backend base URL (for token endpoint)
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
 const STREAM_TOKEN_URL = BACKEND_URL
   ? `${BACKEND_URL}/api/stream/token`
-  : "/api/stream/token"; // fallback for local dev with proxy
+  : "/api/stream/token";
 
 export default function RoomCall({ room, displayName }) {
   const { user } = useAuth();
 
-  // --- SAFETY GUARD: if no room yet, show neutral UI ---
-  if (!room) {
+  if (!room || !room.id) {
     return (
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-              Voice &amp; Video
-            </h3>
-            <p className="text-[10px] text-slate-500 mt-0.5">
-              Select a room to enable calling.
-            </p>
-          </div>
-          <button
-            disabled
-            className="px-4 py-1.5 rounded-md text-xs font-semibold bg-gray-300 dark:bg-gray-700 text-gray-600 dark:text-gray-300 cursor-not-allowed"
-          >
-            Join Call
-          </button>
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4 bg-gray-50 dark:bg-gray-900 shadow-sm flex flex-col items-center justify-center text-center h-full min-h-[140px]">
+        <div className="w-9 h-9 bg-gray-200 dark:bg-gray-800 rounded-full flex items-center justify-center mb-2">
+          <span className="text-lg">📞</span>
         </div>
+        <h3 className="text-[11px] font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
+          Voice & Video
+        </h3>
+        <p className="text-[10px] text-slate-500 mt-1">
+          {room ? "This room has no ID." : "Select a room to start calling."}
+        </p>
       </div>
     );
   }
 
-  // Use whatever identifier we have for the room
   const roomId = room._id || room.id || room.code;
-  if (!roomId) {
-    return (
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
-        <div className="flex items-center justify-between">
-          <div>
-            <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-              Voice &amp; Video
-            </h3>
-            <p className="text-[10px] text-slate-500 mt-0.5">
-              This room has no id yet. Try opening it again.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // Identify user for Stream
   const currentUserName = displayName || user?.name || "User";
   const currentUserId =
     user?._id ||
@@ -83,21 +58,16 @@ export default function RoomCall({ room, displayName }) {
   const [inCall, setInCall] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
   const [error, setError] = useState("");
-
-  // 🔔 socket-based presence + notification
   const [participantCount, setParticipantCount] = useState(0);
-  const [incomingCall, setIncomingCall] = useState(null); // { startedBy }
+
+  // incoming banner
+  const [incomingCallInfo, setIncomingCallInfo] = useState(null);
 
   const isOwner = user?.email && room.ownerId === user.email;
 
-  // ---------- Initialize Stream client + Call ----------
+  // Init Stream client + call
   useEffect(() => {
-    if (!STREAM_API_KEY) {
-      console.warn(
-        "STREAM_API_KEY missing. Set VITE_STREAM_API_KEY in your frontend .env"
-      );
-      return;
-    }
+    if (!STREAM_API_KEY) return;
     if (!currentUserId) return;
 
     let cancelled = false;
@@ -109,7 +79,6 @@ export default function RoomCall({ room, displayName }) {
         setLoading(true);
         setError("");
 
-        // 👉 Fetch Stream user token from your backend
         const res = await fetch(STREAM_TOKEN_URL, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -119,36 +88,25 @@ export default function RoomCall({ room, displayName }) {
           }),
         });
 
-        if (!res.ok) {
-          const txt = await res.text();
-          throw new Error(`Token fetch failed [${res.status}]: ${txt}`);
-        }
-
+        if (!res.ok) throw new Error("Token fetch failed");
         const data = await res.json();
         const token = data.token;
 
         if (cancelled) return;
 
-        // Create Stream Video client
         clientInstance = new StreamVideoClient({
           apiKey: STREAM_API_KEY,
-          user: {
-            id: currentUserId,
-            name: currentUserName,
-          },
+          user: { id: currentUserId, name: currentUserName },
           token,
         });
 
-        // One Stream call per room; type "default"
         callInstance = clientInstance.call("default", String(roomId));
 
         setVideoClient(clientInstance);
         setCall(callInstance);
       } catch (err) {
         console.error("[Stream] init error:", err);
-        if (!cancelled) {
-          setError("Failed to initialize video client.");
-        }
+        if (!cancelled) setError("Failed to init video.");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -158,95 +116,112 @@ export default function RoomCall({ room, displayName }) {
 
     return () => {
       cancelled = true;
-      (async () => {
+      const cleanup = async () => {
         try {
-          if (callInstance) {
-            await callInstance.leave();
-          }
+          if (callInstance) await callInstance.leave();
         } catch {}
         try {
-          if (clientInstance) {
-            await clientInstance.disconnectUser();
-          }
+          if (clientInstance) await clientInstance.disconnectUser();
         } catch {}
-      })();
+      };
+      cleanup();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [roomId, currentUserId]);
+  }, [roomId, currentUserId, currentUserName]);
 
-  // ---------- Socket.io: call presence + notifications ----------
+  // Socket events: participants + incoming banner
   useEffect(() => {
     if (!roomId) return;
 
-    const handleExistingPeers = ({ participantCount }) => {
-      setParticipantCount(participantCount || 1);
-    };
+    const handleUpdate = ({ participantCount }) =>
+      setParticipantCount(participantCount || 0);
 
-    const handleUserJoinedCall = ({ participantCount }) => {
-      setParticipantCount(participantCount || 1);
-    };
+    callSocket.on("existing_peers", handleUpdate);
+    callSocket.on("user_joined_call", handleUpdate);
+    callSocket.on("user_left_call", handleUpdate);
 
-    const handleUserLeftCall = ({ participantCount }) => {
-      if (typeof participantCount === "number") {
-        setParticipantCount(participantCount);
-      } else {
-        setParticipantCount((prev) => Math.max(prev - 1, 0));
-      }
-    };
-
+    // --- updated robust handler: extract exact starter name (accepts object or string) ---
     const handleCallStarted = ({ roomId: startedRoomId, startedBy }) => {
-      if (String(startedRoomId) === String(roomId) && !inCall) {
-        setIncomingCall({ startedBy: startedBy || "Someone" });
+      if (String(startedRoomId) !== String(roomId)) return;
+      if (!startedBy) return;
+
+      // startedBy may be:
+      // - an object { id, name, displayName }
+      // - or a simple string with the starter's name
+      // We'll extract the name robustly and avoid showing banner to the starter themself.
+      let starterId = null;
+      let starterName = null;
+
+      if (typeof startedBy === "string") {
+        starterName = startedBy;
+      } else if (typeof startedBy === "object") {
+        // prefer displayName, then name, then id fallback
+        starterName =
+          startedBy.displayName ||
+          startedBy.name ||
+          (startedBy.id ? String(startedBy.id) : null);
+        starterId = startedBy.id || null;
       }
+
+      // If the starterId matches current user id, don't show banner
+      if (starterId && String(starterId) === String(currentUserId)) return;
+      // If we only received a starter name string that equals our display name, skip banner
+      if (!starterId && starterName && starterName === currentUserName) return;
+
+      if (!starterName) starterName = "Someone";
+      setIncomingCallInfo({
+        callerId: starterId,
+        callerName: starterName,
+      });
     };
 
     const handleCallEnded = ({ roomId: endedRoomId }) => {
       if (String(endedRoomId) !== String(roomId)) return;
-      setIncomingCall(null);
-      setParticipantCount(0);
-      if (inCall) {
-        setInCall(false);
-        setFullscreen(false);
-      }
+      setIncomingCallInfo(null);
     };
 
-    callSocket.on("existing_peers", handleExistingPeers);
-    callSocket.on("user_joined_call", handleUserJoinedCall);
-    callSocket.on("user_left_call", handleUserLeftCall);
     callSocket.on("call_started", handleCallStarted);
     callSocket.on("call_ended", handleCallEnded);
 
     return () => {
-      callSocket.off("existing_peers", handleExistingPeers);
-      callSocket.off("user_joined_call", handleUserJoinedCall);
-      callSocket.off("user_left_call", handleUserLeftCall);
+      callSocket.off("existing_peers", handleUpdate);
+      callSocket.off("user_joined_call", handleUpdate);
+      callSocket.off("user_left_call", handleUpdate);
       callSocket.off("call_started", handleCallStarted);
       callSocket.off("call_ended", handleCallEnded);
     };
-  }, [roomId, inCall]);
+  }, [roomId, currentUserId, currentUserName]);
 
-  // ---------- Join / Leave call (Stream + socket presence) ----------
-  const handleJoin = async () => {
+  // Join / leave handlers
+  const handleJoin = async (fromBanner = false) => {
     if (!call) return;
-    setError("");
     try {
       setLoading(true);
-      // create: true => create call room if doesn't exist
       await call.join({ create: true });
 
-      // 🔔 notify other room members via your existing socket.io logic
       callSocket.emit("join_call", {
         roomId,
         isOwner,
         displayName: currentUserName,
       });
 
+      // Only the user who first starts the call announces it
+      if (!fromBanner) {
+        callSocket.emit("call_started", {
+          roomId,
+          startedBy: {
+            id: currentUserId,
+            name: currentUserName,
+            displayName: currentUserName,
+          },
+        });
+      }
+
+      setIncomingCallInfo(null);
       setInCall(true);
-      setIncomingCall(null);
-      if (participantCount === 0) setParticipantCount(1);
+      setFullscreen(true);
     } catch (err) {
-      console.error("[Stream] join error:", err);
-      setError("Unable to join call. Please try again.");
+      console.error(err);
+      setError("Could not join call.");
     } finally {
       setLoading(false);
     }
@@ -254,130 +229,151 @@ export default function RoomCall({ room, displayName }) {
 
   const handleLeave = async () => {
     try {
-      setLoading(true);
-      if (call) {
-        await call.leave();
-      }
-    } catch (err) {
-      console.error("[Stream] leave error:", err);
+      if (call) await call.leave();
+    } catch {
     } finally {
-      // 🔔 notify socket server that this user left the call
       callSocket.emit("leave_call", { roomId });
-
+      callSocket.emit("call_ended", { roomId });
       setInCall(false);
       setFullscreen(false);
-      setLoading(false);
-      setParticipantCount(0);
-      setIncomingCall(null);
     }
   };
 
-  const liveCount = inCall
-    ? participantCount || 1
-    : participantCount > 0
-    ? participantCount
-    : 0;
-
+  // Compact widget UI
   return (
     <>
-      <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-2 bg-gray-50 dark:bg-gray-900 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h3 className="text-xs font-bold uppercase tracking-wide text-slate-700 dark:text-slate-300">
-                Voice &amp; Video (Stream)
-              </h3>
-              {liveCount > 0 && (
-                <span className="flex items-center gap-1 text-[10px] bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-1.5 py-0.5 rounded-full">
-                  <span className="relative flex h-2 w-2">
-                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75" />
-                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500" />
-                  </span>
-                  Live · {liveCount}
+      {/* Incoming call banner */}
+      {incomingCallInfo && !inCall && (
+        <div className="mb-2 rounded-lg border border-blue-200 dark:border-blue-900/40 bg-blue-50/90 dark:bg-blue-900/30 px-3 py-2 flex items-center justify-between text-[11px] animate-in slide-in-from-top duration-300">
+          <div className="flex items-center gap-2">
+            <div className="w-7 h-7 rounded-full bg-blue-500 text-white flex items-center justify-center text-[11px] font-semibold animate-pulse">
+              {(incomingCallInfo.callerName || "S").charAt(0).toUpperCase()}
+            </div>
+            <div className="flex flex-col">
+              <span className="font-semibold text-slate-800 dark:text-slate-100">
+                {incomingCallInfo.callerName} started a call
+              </span>
+              <span className="text-[10px] text-slate-600 dark:text-slate-300">
+                Tap Join to enter the room call
+              </span>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIncomingCallInfo(null)}
+              className="px-2 py-1 rounded-full text-[10px] border border-slate-300 dark:border-slate-600 text-slate-600 dark:text-slate-200 hover:bg-slate-100/70 dark:hover:bg-slate-800/60 transition-colors"
+            >
+              Dismiss
+            </button>
+            <button
+              onClick={() => handleJoin(true)}
+              disabled={loading || !STREAM_API_KEY || !call}
+              className="px-3 py-1 rounded-full text-[10px] font-semibold bg-green-600 text-white hover:bg-green-700 disabled:opacity-60 transition-all active:scale-95"
+            >
+              Join
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="rounded-xl border border-gray-200 dark:border-gray-700 px-3 py-2 bg-white dark:bg-gray-900 shadow-sm flex items-center justify-between transition-all hover:shadow-md h-[64px]">
+        <div className="flex items-center gap-2">
+          <div
+            className={`w-2 h-2 rounded-full ${
+              inCall
+                ? "bg-green-500 animate-pulse"
+                : "bg-gray-300 dark:bg-gray-600"
+            }`}
+          ></div>
+          <div className="flex flex-col">
+            <h3 className="text-[11px] font-semibold tracking-wide text-slate-700 dark:text-slate-300">
+              Video Call
+            </h3>
+            <p className="text-[10px] text-slate-500">
+              {inCall ? "Call in progress" : "Tap Join to start"}
+              {participantCount > 0 && (
+                <span className="ml-1 text-[9px] text-slate-400">
+                  • {participantCount} in call
                 </span>
               )}
-            </div>
-            {!inCall && (
-              <p className="text-[10px] text-slate-500 truncate mt-0.5">
-                {STREAM_API_KEY
-                  ? isOwner
-                    ? 'Tap Join to start a Stream call. Others see a "Call started" banner.'
-                    : "You’ll see a banner when someone starts a call."
-                  : "Stream API key not configured."}
-              </p>
-            )}
-          </div>
-
-          <div className="flex items-center gap-1.5">
-            {inCall ? (
-              <>
-                <button
-                  onClick={() => setFullscreen(true)}
-                  className="p-1.5 rounded-md text-xs bg-gray-200 dark:bg-gray-800 text-gray-700 dark:text-gray-200 hover:bg-gray-300 dark:hover:bg-gray-700"
-                  title="Open call view"
-                >
-                  ⛶
-                </button>
-                <button
-                  onClick={handleLeave}
-                  disabled={loading}
-                  className="px-3 py-1.5 rounded-md text-xs font-semibold bg-red-600 text-white hover:bg-red-700 shadow-sm disabled:opacity-60"
-                >
-                  {loading ? "Leaving..." : "End"}
-                </button>
-              </>
-            ) : (
-              <button
-                onClick={handleJoin}
-                disabled={loading || !STREAM_API_KEY || !call}
-                className="px-4 py-1.5 rounded-md text-xs font-semibold bg-blue-600 text-white hover:bg-blue-700 shadow-sm transition disabled:opacity-60"
-              >
-                {loading ? "Connecting..." : "Join Call"}
-              </button>
-            )}
+            </p>
           </div>
         </div>
 
-        {/* 🔔 Incoming call banner (socket-based) */}
-        {incomingCall && !inCall && (
-          <div className="mt-2 flex items-center justify-between rounded-lg bg-blue-600 text-white px-3 py-2 text-xs shadow-md">
-            <span className="font-medium">
-              📞 {incomingCall.startedBy} started a call.
-            </span>
-            <div className="flex gap-2">
+        <div className="flex items-center gap-2">
+          {inCall ? (
+            <>
               <button
-                onClick={handleJoin}
-                className="px-2 py-0.5 rounded bg-white text-blue-700 font-bold hover:bg-gray-100"
+                onClick={() => setFullscreen(true)}
+                className="p-1.5 rounded-full bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-700 transition active:scale-95 border border-gray-200 dark:border-gray-700"
+                title="Expand"
               >
-                Join
+                <svg
+                  className="w-4 h-4"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4"
+                  />
+                </svg>
               </button>
               <button
-                onClick={() => setIncomingCall(null)}
-                className="px-2 py-0.5 rounded bg-blue-700 hover:bg-blue-800"
+                onClick={handleLeave}
+                className="px-3 py-1.5 rounded-lg text-[11px] font-semibold bg-red-600 text-white hover:bg-red-700 shadow-md shadow-red-500/20 active:scale-95 transition"
               >
-                Dismiss
+                End
               </button>
-            </div>
-          </div>
-        )}
-
-        {error && <div className="mt-2 text-[10px] text-red-500">{error}</div>}
-
-        {!STREAM_API_KEY && (
-          <div className="mt-2 text-[10px] text-amber-600 dark:text-amber-400">
-            Set <code>VITE_STREAM_API_KEY</code> in your frontend{" "}
-            <code>.env</code>.
-          </div>
-        )}
+            </>
+          ) : (
+            <button
+              onClick={() => handleJoin(false)}
+              disabled={loading || !STREAM_API_KEY || !call}
+              className="px-3.5 py-1.5 rounded-lg text-[11px] font-semibold bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 shadow-md shadow-blue-500/20 active:scale-95 transition flex items-center gap-1.5"
+            >
+              {loading ? (
+                <>
+                  <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
+                  Connecting
+                </>
+              ) : (
+                <>
+                  <svg
+                    className="w-3.5 h-3.5"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                  >
+                    <path
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth={2}
+                      d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+                    />
+                  </svg>
+                  Join
+                </>
+              )}
+            </button>
+          )}
+        </div>
       </div>
 
-      {/* Fullscreen overlay with Instagram-style layout + all controls */}
+      {error && (
+        <div className="mt-2 text-[10px] text-red-500 bg-red-50 dark:bg-red-900/10 p-2 rounded border border-red-100 dark:border-red-900/30">
+          {error}
+        </div>
+      )}
+
       {fullscreen && inCall && videoClient && call && (
         <FullscreenCallOverlay
           client={videoClient}
           call={call}
-          roomName={room.name || "Room"}
-          currentUserName={currentUserName}
+          roomName={room.name}
           onMinimize={() => setFullscreen(false)}
           onLeave={handleLeave}
         />
@@ -386,66 +382,172 @@ export default function RoomCall({ room, displayName }) {
   );
 }
 
-/**
- * Full-screen overlay that renders Stream's video call UI:
- * - SpeakerLayout: active speaker big, others in smaller tiles (Instagram-ish)
- * - CallControls: mic toggle, camera toggle, flip camera on mobile, screen share, etc.
- */
+// --- FULLSCREEN COMPONENT ---
 function FullscreenCallOverlay({
   client,
   call,
   roomName,
-  currentUserName,
   onMinimize,
   onLeave,
 }) {
   return (
-    <div className="fixed inset-0 z-50 bg-black">
+    <div className="fixed inset-0 z-[9999] bg-slate-950 text-white flex flex-col str-video animate-in fade-in duration-300">
       <StreamVideo client={client}>
         <StreamCall call={call}>
-          {/* Top bar overlay */}
-          <div className="absolute top-0 left-0 right-0 z-50 flex items-center justify-between px-4 py-2 bg-black/70 text-white text-xs">
-            <div>
-              <div className="font-semibold">Room Call – {roomName}</div>
-              <div className="text-[10px] text-gray-300">
-                You are connected as {currentUserName}
+          {/* TOP HEADER */}
+          <div className="flex items-center justify-between px-3 md:px-4 py-2.5 md:py-3 bg-slate-900/80 backdrop-blur-md border-b border-white/10 shrink-0 z-50 absolute top-0 left-0 right-0">
+            <div className="flex items-center gap-2.5 md:gap-3">
+              <div className="w-7 h-7 md:w-8 md:h-8 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-[11px] md:text-xs font-bold shadow-lg text-white">
+                {(roomName || "R").charAt(0).toUpperCase()}
+              </div>
+              <div className="flex flex-col">
+                <h2 className="text-xs md:text-sm font-semibold text-white tracking-tight line-clamp-1 max-w-[180px] md:max-w-xs">
+                  {roomName}
+                </h2>
+                <div className="flex items-center gap-1.5">
+                  <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse"></span>
+                  <p className="text-[9px] md:text-[10px] text-gray-300 font-medium">
+                    Live Connection
+                  </p>
+                </div>
               </div>
             </div>
-            <div className="flex gap-2">
-              <button
-                onClick={onMinimize}
-                className="px-2 py-1 rounded bg-gray-700 hover:bg-gray-600 text-[11px]"
+
+            <button
+              onClick={onMinimize}
+              className="group p-1.5 md:p-2 rounded-full hover:bg-white/10 transition-colors"
+              title="Minimize"
+            >
+              <svg
+                className="w-5 h-5 md:w-6 md:h-6 text-gray-300 group-hover:text-white"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
               >
-                ⛶ Minimize
-              </button>
-              <button
-                onClick={onLeave}
-                className="px-2 py-1 rounded bg-red-600 hover:bg-red-700 text-[11px]"
-              >
-                End Call
-              </button>
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M19 9l-7 7-7-7"
+                />
+              </svg>
+            </button>
+          </div>
+
+          {/* MAIN VIDEO AREA - Adjusted spacing to show local preview */}
+          <div className="flex-1 relative bg-black flex items-center justify-center pt-[52px] md:pt-[60px] pb-[100px] md:pb-[110px] w-full h-full overflow-hidden">
+            <div className="w-full h-full max-w-[1200px] mx-auto px-2 sm:px-3 md:px-4">
+              <SpeakerLayout participantsBarPosition="bottom" />
+            </div>
+
+            {/* Participant List - show on md+ */}
+            <div className="absolute top-16 md:top-20 right-2 md:right-4 hidden md:block z-40 max-w-[200px] lg:max-w-[240px]">
+              <div className="bg-black/60 backdrop-blur-md rounded-xl p-2 max-h-[240px] lg:max-h-[300px] overflow-y-auto border border-white/10 scrollbar-thin scrollbar-thumb-white/20">
+                <h4 className="text-[9px] font-bold text-gray-400 mb-2 px-1.5 uppercase tracking-wide">
+                  Participants
+                </h4>
+                <CallParticipantsList />
+              </div>
             </div>
           </div>
 
-          {/* Stream built-in layout & controls */}
-          <StreamTheme>
-            <div className="w-full h-full flex flex-col pt-10">
-              {/* Big video layout (active speaker style) */}
-              <div className="flex-1 min-h-0">
-                <SpeakerLayout />
+          {/* BOTTOM CONTROLS - Higher position to not cover local video */}
+          <div className="absolute bottom-5 md:bottom-7 left-0 right-0 z-50 flex justify-center px-2 sm:px-4 pointer-events-none">
+            <div className="pointer-events-auto flex items-center gap-2.5 md:gap-4 px-4 md:px-5 py-2.5 md:py-3 bg-slate-900/80 backdrop-blur-xl border border-white/20 rounded-full shadow-2xl shadow-black/60 transition-all hover:bg-slate-900/95 duration-300 max-w-[85vw] md:max-w-md">
+              {/* Mic */}
+              <div className="flex flex-col items-center gap-0.5 group">
+                <div className="custom-stream-btn-wrapper">
+                  <ToggleAudioPublishingButton />
+                </div>
               </div>
 
-              {/* Bottom controls: mic, cam, flip, screenshare, etc. */}
-              <div className="shrink-0 px-4 pb-4">
-                <CallControls
-                  onLeave={onLeave}
-                  // you can customize which buttons show here later if you want
+              {/* Cam */}
+              <div className="flex flex-col items-center gap-0.5 group">
+                <div className="custom-stream-btn-wrapper">
+                  <ToggleVideoPublishingButton />
+                </div>
+              </div>
+
+              {/* Screen share - hidden on very small screens */}
+              <div className="hidden sm:flex flex-col items-center gap-0.5 group">
+                <div className="custom-stream-btn-wrapper">
+                  <ScreenShareButton />
+                </div>
+              </div>
+
+              <div className="w-px h-6 md:h-7 bg-white/30 mx-0.5 md:mx-1"></div>
+
+              {/* End Call */}
+              <div className="flex flex-col items-center gap-0.5 group">
+                <CancelCallButton
+                  onClick={onLeave}
+                  style={{
+                    backgroundColor: "#dc2626",
+                    color: "white",
+                    border: "none",
+                  }}
+                  className="!bg-red-600 hover:!bg-red-700 !text-white !border-none rounded-full w-10 h-10 md:w-11 md:h-11 flex items-center justify-center shadow-lg shadow-red-600/40 transition-transform hover:scale-105 active:scale-95"
                 />
               </div>
             </div>
-          </StreamTheme>
+          </div>
         </StreamCall>
       </StreamVideo>
+
+      {/* Stream button style overrides */}
+      <style>{`
+        .custom-stream-btn-wrapper .str-video__btn {
+          background-color: rgba(255, 255, 255, 0.12) !important;
+          border: 1px solid rgba(255, 255, 255, 0.15) !important;
+          border-radius: 9999px !important;
+          width: 42px !important;
+          height: 42px !important;
+          color: white !important;
+          transition: all 0.2s ease;
+        }
+        @media (min-width: 768px) {
+          .custom-stream-btn-wrapper .str-video__btn {
+            width: 46px !important;
+            height: 46px !important;
+          }
+        }
+        .custom-stream-btn-wrapper .str-video__btn:hover {
+          background-color: rgba(255, 255, 255, 0.22) !important;
+          transform: scale(1.08);
+        }
+        .custom-stream-btn-wrapper .str-video__btn-enabled {
+          background-color: rgba(255, 255, 255, 0.2) !important;
+        }
+        .str-video__participant-list {
+          background: transparent !important;
+        }
+        .str-video__participant-list-item {
+          color: white !important;
+          font-size: 11px !important;
+        }
+        
+        /* Ensure local video preview stays visible */
+        .str-video__speaker-layout__wrapper {
+          height: 100% !important;
+          padding-bottom: 0 !important;
+        }
+        
+        /* Scrollbar styling for participant list */
+        .scrollbar-thin::-webkit-scrollbar {
+          width: 4px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-track {
+          background: rgba(255,255,255,0.05);
+          border-radius: 10px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb {
+          background: rgba(255,255,255,0.2);
+          border-radius: 10px;
+        }
+        .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+          background: rgba(255,255,255,0.3);
+        }
+      `}</style>
     </div>
   );
 }

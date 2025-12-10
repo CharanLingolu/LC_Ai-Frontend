@@ -822,11 +822,89 @@ export default function RoomChat({ room, displayName }) {
                       {canDelete && (
                         <button
                           type="button"
-                          onClick={() => {
-                            socket.emit("delete_message", {
-                              messageId: m._id,
-                            });
+                          onClick={(e) => {
+                            e.stopPropagation();
                             setActiveReactionMessageId(null);
+
+                            // Build stable string id
+                            const messageIdStr =
+                              m && m._id
+                                ? typeof m._id === "object" &&
+                                  typeof m._id.toString === "function"
+                                  ? m._id.toString()
+                                  : String(m._id)
+                                : null;
+
+                            const payload = {
+                              messageId: messageIdStr,
+                              roomId: backendRoomId || roomId,
+                              requesterUserId: currentUserId || null,
+                              requesterGuestName: currentUserName || null,
+                              createdAt: m?.createdAt || null,
+                              textSnippet:
+                                typeof m?.text === "string"
+                                  ? m.text.slice(0, 120)
+                                  : null,
+                            };
+
+                            // If message exists in DB, ask server to delete
+                            if (messageIdStr) {
+                              socket.emit("delete_message", payload, (res) => {
+                                // no ack → fallback local delete after delay
+                                if (!res || typeof res.ok === "undefined") {
+                                  setTimeout(() => {
+                                    setMessages((prev) =>
+                                      (prev || []).filter((msg) => {
+                                        const id = msg._id
+                                          ? typeof msg._id === "object" &&
+                                            typeof msg._id.toString ===
+                                              "function"
+                                            ? msg._id.toString()
+                                            : String(msg._id)
+                                          : null;
+                                        return id !== messageIdStr;
+                                      })
+                                    );
+                                  }, 700);
+                                  return;
+                                }
+
+                                // success: remove locally (in case broadcast was missed)
+                                if (res.ok) {
+                                  setMessages((prev) =>
+                                    (prev || []).filter((msg) => {
+                                      const id = msg._id
+                                        ? typeof msg._id === "object" &&
+                                          typeof msg._id.toString === "function"
+                                          ? msg._id.toString()
+                                          : String(msg._id)
+                                        : null;
+                                      return id !== messageIdStr;
+                                    })
+                                  );
+                                } else {
+                                  // only show error in console (as requested)
+                                  console.error(
+                                    "delete_message failed:",
+                                    res.error || "Unknown error"
+                                  );
+                                }
+                              });
+
+                              return;
+                            }
+
+                            // Local-only messages (no _id)
+                            setMessages((prev) =>
+                              (prev || []).filter(
+                                (msg) =>
+                                  !(
+                                    (!msg._id || msg._id === null) &&
+                                    msg.createdAt === m.createdAt &&
+                                    msg.text === m.text
+                                  )
+                              )
+                            );
                           }}
                           className="ml-2 px-2 py-0.5 text-[11px] rounded-full bg-red-600/80 hover:bg-red-700 text-white"
                         >

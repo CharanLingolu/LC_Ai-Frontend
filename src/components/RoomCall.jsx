@@ -66,13 +66,16 @@ export default function RoomCall({ room, displayName }) {
   const isOwner = user?.email && room.ownerId === user.email;
 
   // Init Stream client + call
+  // Init Stream client + call (robust: re-use existing client instances)
   useEffect(() => {
     if (!STREAM_API_KEY) return;
     if (!currentUserId) return;
 
     let cancelled = false;
-    let clientInstance;
-    let callInstance;
+    let clientInstance = null;
+    let callInstance = null;
+    // track whether this effect created the client (so cleanup can disconnect)
+    let createdClientHere = false;
 
     const initStream = async () => {
       try {
@@ -94,12 +97,39 @@ export default function RoomCall({ room, displayName }) {
 
         if (cancelled) return;
 
-        clientInstance = new StreamVideoClient({
-          apiKey: STREAM_API_KEY,
-          user: { id: currentUserId, name: currentUserName },
-          token,
-        });
+        // Attempt to use SDK helper (if available)
+        if (typeof StreamVideoClient.getOrCreateInstance === "function") {
+          // SDK will reuse existing instance for the same user id
+          clientInstance = StreamVideoClient.getOrCreateInstance({
+            apiKey: STREAM_API_KEY,
+            user: { id: currentUserId, name: currentUserName },
+            token,
+          });
+          // We cannot know if the SDK created it or reused it, so assume we did NOT create it
+          // (don't disconnect blindly); but it's safe to attempt disconnect on unmount.
+          createdClientHere = false;
+        } else {
+          // Fallback singleton map on window to avoid duplicate clients (works with HMR)
+          const key = `streamClient_${currentUserId}`;
+          window.__streamVideoClients = window.__streamVideoClients || {};
 
+          if (window.__streamVideoClients[key]) {
+            clientInstance = window.__streamVideoClients[key];
+            createdClientHere = false;
+          } else {
+            clientInstance = new StreamVideoClient({
+              apiKey: STREAM_API_KEY,
+              user: { id: currentUserId, name: currentUserName },
+              token,
+            });
+            window.__streamVideoClients[key] = clientInstance;
+            createdClientHere = true;
+          }
+        }
+
+        if (cancelled) return;
+
+        // create/get call instance
         callInstance = clientInstance.call("default", String(roomId));
 
         setVideoClient(clientInstance);
@@ -116,16 +146,42 @@ export default function RoomCall({ room, displayName }) {
 
     return () => {
       cancelled = true;
+
       const cleanup = async () => {
         try {
-          if (callInstance) await callInstance.leave();
-        } catch {}
+          if (callInstance) {
+            await callInstance.leave().catch(() => {});
+          }
+        } catch (_) {
+          /* ignore */
+        }
+
+        // If we *created* the client here (fallback path), disconnect it.
+        // If SDK provided getOrCreateInstance, we don't forcibly disconnect shared instance.
         try {
-          if (clientInstance) await clientInstance.disconnectUser();
-        } catch {}
+          if (
+            createdClientHere &&
+            clientInstance &&
+            typeof clientInstance.disconnectUser === "function"
+          ) {
+            await clientInstance.disconnectUser().catch(() => {});
+            // also remove from our global map
+            const key = `streamClient_${currentUserId}`;
+            if (
+              window.__streamVideoClients &&
+              window.__streamVideoClients[key]
+            ) {
+              delete window.__streamVideoClients[key];
+            }
+          }
+        } catch (_) {
+          /* ignore */
+        }
       };
+
       cleanup();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [roomId, currentUserId, currentUserName]);
 
   // Socket events: participants + incoming banner

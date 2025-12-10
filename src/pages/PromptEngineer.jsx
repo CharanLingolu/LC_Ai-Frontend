@@ -38,16 +38,17 @@ export default function PromptEngineer() {
   };
 
   return (
-    <div className="h-full flex flex-col rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4">
+    <div className="h-full flex flex-col rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-900 p-4 overflow-hidden">
       <h1 className="text-sm font-semibold mb-2">Prompt Engineer ✨</h1>
-      <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">
+      <p className="text-xs text-slate-500 dark:text-slate-400 mb-4 shrink-0">
         Describe what you want the AI to do, and LC_Ai will craft a powerful
         prompt for you.
       </p>
 
-      <form onSubmit={handleGenerate} className="space-y-3 mb-4">
+      {/* Form Area - Fixed Height for Input */}
+      <form onSubmit={handleGenerate} className="space-y-3 mb-4 shrink-0">
         <textarea
-          className="w-full h-32 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm resize-none"
+          className="w-full h-32 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-sm resize-none overflow-y-auto"
           placeholder="Example: I want a prompt to generate app ideas for a student productivity app..."
           value={input}
           onChange={(e) => setInput(e.target.value)}
@@ -61,11 +62,14 @@ export default function PromptEngineer() {
         </button>
       </form>
 
-      <div className="flex-1 border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-3 text-sm">
+      {/* Result Area - Flex-1 to take remaining space + Scrollable */}
+      <div className="flex-1 flex flex-col min-h-0 border border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-3 text-sm">
         {result ? (
-          <pre className="whitespace-pre-wrap text-slate-900 dark:text-slate-100">
-            {result}
-          </pre>
+          <div className="flex-1 overflow-y-auto pr-2">
+            <pre className="whitespace-pre-wrap text-slate-900 dark:text-slate-100 font-sans">
+              {result}
+            </pre>
+          </div>
         ) : (
           <p className="text-xs text-slate-500 dark:text-slate-400">
             Your generated prompt will appear here.

@@ -21,7 +21,6 @@ function getStorageKey(user, isAuthenticated) {
   return STORAGE_KEY_PREFIX + user.email;
 }
 
-// 🔹 helper to build initial greeting message
 function makeInitialMessage(name) {
   const now = new Date().toISOString();
   return {
@@ -48,6 +47,8 @@ export default function FriendMode() {
 
   const [activeReactionMessageId, setActiveReactionMessageId] = useState(null);
   const longPressTimerRef = useRef(null);
+  const longPressTriggeredRef = useRef(false);
+  const reactionOpenedAtRef = useRef(0);
   const messagesContainerRef = useRef(null);
 
   // ---------- THEME BACKGROUND ----------
@@ -98,7 +99,7 @@ export default function FriendMode() {
     }
   }, [theme]);
 
-  // 1️⃣ Load saved conversation (or greeting)
+  // 1️⃣ Load saved conversation
   useEffect(() => {
     const key = getStorageKey(user, isAuthenticated);
 
@@ -112,30 +113,16 @@ export default function FriendMode() {
       try {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed) && parsed.length > 0) {
-          const now = new Date().toISOString();
-          const mapped = parsed.map((m, idx) =>
-            m.text || m.createdAt
-              ? m
-              : {
-                  id: `old-${idx}-${Date.now()}`,
-                  role: m.role,
-                  text: m.content,
-                  createdAt: now,
-                  reactions: [],
-                }
-          );
-          setMessages(mapped);
+          setMessages(parsed);
           return;
         }
-      } catch {
-        // ignore
-      }
+      } catch {}
     }
 
     setMessages([makeInitialMessage(user?.name)]);
   }, [user?.email, user?.name, isAuthenticated]);
 
-  // 2️⃣ Save conversation only for signed-in users
+  // 2️⃣ Save conversation
   useEffect(() => {
     const key = getStorageKey(user, isAuthenticated);
     if (!key) return;
@@ -143,7 +130,7 @@ export default function FriendMode() {
     localStorage.setItem(key, JSON.stringify(messages));
   }, [messages, user?.email, isAuthenticated]);
 
-  // 3️⃣ Auto-scroll when messages / loading change
+  // 3️⃣ Auto-scroll
   useEffect(() => {
     const el = messagesContainerRef.current;
     if (!el) return;
@@ -152,7 +139,7 @@ export default function FriendMode() {
     });
   }, [messages, loading]);
 
-  // 4️⃣ Auto-scroll when reaction picker opens
+  // 4️⃣ Reaction-bar scroll
   useEffect(() => {
     const el = messagesContainerRef.current;
     if (!el) return;
@@ -161,16 +148,37 @@ export default function FriendMode() {
     });
   }, [activeReactionMessageId]);
 
+  // 5️⃣ Close reaction bar on outside tap — SAME AS RoomChat
+  useEffect(() => {
+    if (!activeReactionMessageId) return;
+
+    const handleOutsideTap = (e) => {
+      if (e.target.closest("[data-reaction-bar='true']")) return;
+
+      if (Date.now() - reactionOpenedAtRef.current < 400) return;
+
+      setActiveReactionMessageId(null);
+    };
+
+    document.addEventListener("click", handleOutsideTap);
+    document.addEventListener("touchstart", handleOutsideTap);
+
+    return () => {
+      document.removeEventListener("click", handleOutsideTap);
+      document.removeEventListener("touchstart", handleOutsideTap);
+    };
+  }, [activeReactionMessageId]);
+
   function buildMessagesForAPI(conversation) {
     const core = conversation.map((m) => ({
       role: m.role === "assistant" ? "assistant" : "user",
-      content: m.text || m.content,
+      content: m.text,
     }));
 
     if (user?.name) {
       core.unshift({
         role: "user",
-        content: `For this whole conversation, remember that my name is ${user.name}. If I ask "what is my name?", answer "${user.name}".`,
+        content: `For this whole conversation, remember that my name is ${user.name}.`,
       });
     }
 
@@ -183,7 +191,6 @@ export default function FriendMode() {
     if (!text || loading) return;
 
     const now = new Date().toISOString();
-
     const userMessage = {
       id: `u-${Date.now()}`,
       role: "user",
@@ -206,7 +213,7 @@ export default function FriendMode() {
 
       const replyMsg = {
         id: `a-${Date.now()}`,
-        role: reply.role || "assistant",
+        role: "assistant",
         text: reply.content,
         createdAt: new Date().toISOString(),
         reactions: [],
@@ -214,13 +221,12 @@ export default function FriendMode() {
 
       setMessages((prev) => [...prev, replyMsg]);
     } catch (err) {
-      console.error(err);
       setMessages((prev) => [
         ...prev,
         {
           id: `err-${Date.now()}`,
           role: "assistant",
-          text: "Oops, I had trouble thinking for a moment. Can you try again?",
+          text: "Oops, I couldn't respond. Try again?",
           createdAt: new Date().toISOString(),
           reactions: [],
         },
@@ -239,27 +245,23 @@ export default function FriendMode() {
     localStorage.setItem(THEME_STORAGE_KEY, id);
   };
 
-  // ✅ Only one reaction per message (for this user)
+  // ONE reaction per message
   const handleReactionClick = (messageId, emoji) => {
+    setActiveReactionMessageId(null);
     setMessages((prev) =>
       prev.map((m) => {
         if (m.id !== messageId) return m;
 
-        const reactions = m.reactions || [];
-        const idx = reactions.findIndex((r) => r.userId === "me");
+        const existing = m.reactions?.find((r) => r.userId === "me");
 
         let next;
-        if (idx >= 0) {
-          if (reactions[idx].emoji === emoji) {
-            // same emoji → toggle OFF
-            next = reactions.filter((_, i) => i !== idx);
+        if (existing) {
+          if (existing.emoji === emoji) {
+            next = [];
           } else {
-            // different → REPLACE
-            next = [...reactions];
-            next[idx] = { ...next[idx], emoji };
+            next = [{ emoji, userId: "me" }];
           }
         } else {
-          // no reaction yet → add one
           next = [{ emoji, userId: "me" }];
         }
 
@@ -270,10 +272,14 @@ export default function FriendMode() {
 
   const startLongPress = (messageId) => {
     if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-    longPressTimerRef.current = setTimeout(
-      () => setActiveReactionMessageId(messageId),
-      350
-    );
+
+    longPressTriggeredRef.current = false;
+
+    longPressTimerRef.current = setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      setActiveReactionMessageId(messageId);
+      reactionOpenedAtRef.current = Date.now();
+    }, 350);
   };
 
   const cancelLongPress = () => {
@@ -283,12 +289,9 @@ export default function FriendMode() {
     }
   };
 
-  // 🧼 Clear chat: reset history + localStorage + fresh greeting
   const handleClearChat = () => {
     const key = getStorageKey(user, isAuthenticated);
-    if (key) {
-      localStorage.removeItem(key);
-    }
+    if (key) localStorage.removeItem(key);
     setActiveReactionMessageId(null);
     setMessages([makeInitialMessage(user?.name)]);
   };
@@ -302,43 +305,35 @@ export default function FriendMode() {
       className={`h-full flex flex-col rounded-xl border border-gray-200 dark:border-gray-700 bg-transparent shadow-sm overflow-hidden chat-themable-container ${themeClass}`}
     >
       {/* Header */}
-      <div className="px-3 sm:px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-900/40 dark:bg-gray-900/70 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between shrink-0">
-        <div className="min-w-0">
+      <div className="px-3 sm:px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-900/40 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between shrink-0">
+        <div>
           <h1 className="text-sm font-semibold text-slate-100">Friend Mode</h1>
           <p className="text-xs text-slate-300 truncate">{modeLabel}</p>
         </div>
-        <div className="flex flex-wrap items-center justify-start sm:justify-end gap-1 sm:gap-2">
+
+        <div className="flex flex-wrap items-center gap-1 sm:gap-2">
           {THEMES.map((t) => (
             <button
               key={t.id}
               type="button"
               onClick={() => handleThemeChange(t.id)}
-              className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border transition
-                ${
-                  theme === t.id
-                    ? "bg-white/80 text-slate-900 border-blue-500"
-                    : "bg-white/20 text-slate-100 border-transparent hover:border-blue-300"
-                }`}
+              className={`px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border transition ${
+                theme === t.id
+                  ? "bg-white/80 text-slate-900 border-blue-500"
+                  : "bg-white/20 text-slate-100 border-transparent hover:border-blue-300"
+              }`}
             >
               {t.label}
             </button>
           ))}
 
-          {/* 🧼 Clear chat button */}
           <button
             type="button"
             onClick={handleClearChat}
-            className="px-2 py-0.5 rounded-full text-[9px] sm:text-[10px] border border-red-400 text-red-300 hover:bg-red-500/20 whitespace-nowrap"
-            title="Clear conversation"
+            className="px-2 py-0.5 rounded-full text-[9px] border border-red-400 text-red-300 hover:bg-red-500/20"
           >
             Clear
           </button>
-
-          {user && (
-            <span className="text-[10px] sm:text-xs text-slate-200 hidden sm:inline">
-              Logged in as <b>{user.name}</b>
-            </span>
-          )}
         </div>
       </div>
 
@@ -359,13 +354,13 @@ export default function FriendMode() {
               })
             : "";
 
-          const myReaction = (m.reactions || []).find((r) => r.userId === "me");
-
           const bubbleClass = isUser
             ? bubbleStyles.me
             : isAi
             ? bubbleStyles.ai
             : bubbleStyles.other;
+
+          const myReaction = m.reactions?.find((r) => r.userId === "me");
 
           return (
             <div
@@ -382,7 +377,7 @@ export default function FriendMode() {
                 <span className="text-[10px] text-white/90 mb-1">{name}</span>
 
                 <div
-                  className={`px-3 sm:px-4 py-2 text-xs sm:text-sm shadow-sm break-words rounded-2xl cursor-pointer select-none ${bubbleClass} ${
+                  className={`px-3 sm:px-4 py-2 text-xs sm:text-sm shadow-sm rounded-2xl cursor-pointer select-none break-words ${bubbleClass} ${
                     isUser ? "rounded-br-sm" : "rounded-bl-sm"
                   }`}
                   onMouseDown={() => startLongPress(m.id)}
@@ -404,31 +399,30 @@ export default function FriendMode() {
                   </span>
                 </div>
 
-                <div className="flex items-center flex-wrap gap-2 mt-1 mx-1">
+                <div className="flex items-center gap-2 mt-1 mx-1">
                   {timeLabel && (
                     <span className="text-[9px] text-slate-100">
                       {timeLabel}
                     </span>
                   )}
+
                   {myReaction && (
                     <div className="flex gap-1 text-[10px] bg-black/25 px-1.5 py-0.5 rounded-full">
-                      <span className="flex items-center">
-                        <span>{myReaction.emoji}</span>
-                      </span>
+                      {myReaction.emoji}
                     </div>
                   )}
                 </div>
 
                 {activeReactionMessageId === m.id && (
-                  <div className="mt-1 flex flex-wrap gap-1 text-xs bg-black/25 px-2 py-1 rounded-full shadow-md backdrop-blur-sm">
+                  <div
+                    data-reaction-bar="true"
+                    className="mt-1 flex flex-wrap gap-1 text-xs bg-black/25 px-2 py-1 rounded-full"
+                  >
                     {REACTION_EMOJIS.map((emoji) => (
                       <button
                         key={emoji}
                         type="button"
-                        onClick={() => {
-                          handleReactionClick(m.id, emoji);
-                          setActiveReactionMessageId(null);
-                        }}
+                        onClick={() => handleReactionClick(m.id, emoji)}
                         className="px-1 rounded hover:bg-black/20"
                       >
                         {emoji}
@@ -473,7 +467,7 @@ export default function FriendMode() {
             className="flex-1 px-3 py-2 rounded-lg border border-gray-300/40 dark:border-gray-700 bg-black/40 text-sm text-slate-100 outline-none focus:ring-2 focus:ring-blue-500/70 placeholder:text-gray-400"
             placeholder={
               user?.name
-                ? "Tell me anything, " + user.name + " 😊"
+                ? `Tell me anything, ${user.name} 😊`
                 : "Tell me anything…"
             }
             value={input}
@@ -482,7 +476,7 @@ export default function FriendMode() {
           <button
             type="submit"
             disabled={loading || !input.trim()}
-            className="w-full sm:w-auto px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400 disabled:cursor-not-allowed"
+            className="w-full sm:w-auto px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400"
           >
             Send
           </button>

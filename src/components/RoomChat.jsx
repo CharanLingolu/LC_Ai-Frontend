@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, useMemo } from "react";
 import { useAuth } from "../context/AuthContext";
 import { callLCai } from "../utils/aiClient";
 import { socket } from "../socket";
+import toast from "react-hot-toast";
 
 const INPUT_EMOJIS = ["❤️", "😀", "😂", "😢", "🔥", "👍", "🙏"];
 const REACTION_EMOJIS = ["❤️", "😂", "👍", "😮", "🔥", "😢"];
@@ -13,6 +14,10 @@ const ROOM_THEMES = [
   { id: "midnight", label: "Midnight" },
   { id: "sunset", label: "Sunset" },
 ];
+
+// backend base url for uploads
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
+const UPLOAD_URL = BACKEND_URL ? `${BACKEND_URL}/api/upload` : "/api/upload";
 
 export default function RoomChat({ room, displayName }) {
   const { user } = useAuth();
@@ -26,6 +31,15 @@ export default function RoomChat({ room, displayName }) {
 
   const [activeReactionMessageId, setActiveReactionMessageId] = useState(null);
   const longPressTimerRef = useRef(null);
+  const longPressTriggeredRef = useRef(false);
+  const reactionOpenedAtRef = useRef(0);
+
+  // file upload
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+
+  // Lightbox / enlarged media
+  const [expandedMedia, setExpandedMedia] = useState(null); // { url, type }
 
   // 🔹 Normalize backend room _id into a clean string
   let backendRoomId = null;
@@ -47,7 +61,6 @@ export default function RoomChat({ room, displayName }) {
 
   const currentUserName = displayName || user?.name || "Guest";
   const currentUserId = user?._id || user?.id || null;
-  const isGuest = !currentUserId;
 
   const reactionUserId = currentUserId || `guest_${currentUserName || "Guest"}`;
   const reactionDisplayName = currentUserName || "Guest";
@@ -134,14 +147,40 @@ export default function RoomChat({ room, displayName }) {
     typingTimeoutRef.current = setTimeout(() => setTypingUser(null), 1500);
   };
 
-  // auto-scroll
+  // 🔄 auto-scroll to bottom (with some space for reaction bar)
   useEffect(() => {
     if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
+      messagesEndRef.current.scrollIntoView({
+        behavior: "smooth",
+        block: "end",
+      });
     }
   }, [messages, aiThinking]);
 
-  // history + socket
+  // 🔻 Close reaction bar when clicking / tapping outside it
+  useEffect(() => {
+    if (!activeReactionMessageId) return;
+
+    const handleGlobalTap = (e) => {
+      // Don't close if click is inside the reaction bar
+      if (e.target.closest("[data-reaction-bar='true']")) return;
+
+      // Ignore the very first tap right after opening (from the long-press)
+      if (Date.now() - reactionOpenedAtRef.current < 500) return;
+
+      setActiveReactionMessageId(null);
+    };
+
+    document.addEventListener("click", handleGlobalTap);
+    document.addEventListener("touchstart", handleGlobalTap);
+
+    return () => {
+      document.removeEventListener("click", handleGlobalTap);
+      document.removeEventListener("touchstart", handleGlobalTap);
+    };
+  }, [activeReactionMessageId]);
+
+  // history + socket wiring
   useEffect(() => {
     if (!roomId) return;
 
@@ -152,7 +191,9 @@ export default function RoomChat({ room, displayName }) {
       }
       try {
         const res = await fetch(
-          `https://lc-ai-backend-a080.onrender.com/api/rooms/${backendRoomId}/messages`
+          `${
+            BACKEND_URL || "https://lc-ai-backend-a080.onrender.com"
+          }/api/rooms/${backendRoomId}/messages`
         );
         if (!res.ok) throw new Error("Failed to load");
         const data = await res.json();
@@ -172,6 +213,10 @@ export default function RoomChat({ room, displayName }) {
 
     const handleReceive = (msg) => {
       setMessages((prev) => [...(Array.isArray(prev) ? prev : []), msg]);
+    };
+
+    const handleDeleted = ({ messageId }) => {
+      setMessages((prev) => (prev || []).filter((m) => m._id !== messageId));
     };
 
     const handleSystem = (msg) => {
@@ -235,6 +280,7 @@ export default function RoomChat({ room, displayName }) {
     };
 
     socket.on("receive_message", handleReceive);
+    socket.on("message_deleted", handleDeleted);
     socket.on("system_message", handleSystem);
     socket.on("typing", handleTyping);
     socket.on("reactionUpdated", handleReactionUpdated);
@@ -243,6 +289,7 @@ export default function RoomChat({ room, displayName }) {
 
     return () => {
       socket.off("receive_message", handleReceive);
+      socket.off("message_deleted", handleDeleted);
       socket.off("system_message", handleSystem);
       socket.off("typing", handleTyping);
       socket.off("reactionUpdated", handleReactionUpdated);
@@ -252,6 +299,7 @@ export default function RoomChat({ room, displayName }) {
     };
   }, [roomId, backendRoomId, hasBackendRoom, currentUserName, roomThemeKey]);
 
+  // ---------- SEND TEXT MESSAGE + AI ----------
   const handleSend = async (e) => {
     e.preventDefault();
     const text = input.trim();
@@ -260,18 +308,21 @@ export default function RoomChat({ room, displayName }) {
     setInput("");
     setTypingUser(null);
 
+    const targetRoomId = backendRoomId || roomId;
+
     const payload = {
-      roomId,
+      roomId: targetRoomId,
       text,
       senderUserId: currentUserId,
       senderGuestName: currentUserName,
       role: "user",
     };
 
+    // Let server save + broadcast; we don't push to state here
     socket.emit("send_message", payload);
 
-    // 🔹 Use local allowAI instead of room.allowAI
-    if (allowAI) {
+    // AI: use same logic as your working backup
+    if (allowAI && backendRoomId) {
       setAiThinking(true);
       try {
         const historyForAI = messages.map((m) => ({
@@ -284,11 +335,11 @@ export default function RoomChat({ room, displayName }) {
         });
 
         const aiReply = await callLCai("room", historyForAI, {
-          roomId: backendRoomId || roomId, // <-- IMPORTANT
+          roomId: backendRoomId, // ✅ always Mongo _id here, like backup
         });
 
         const aiPayload = {
-          roomId,
+          roomId: backendRoomId,
           text: aiReply.content,
           senderUserId: null,
           senderGuestName: "LC_Ai 🤖",
@@ -301,9 +352,10 @@ export default function RoomChat({ room, displayName }) {
 
         let message = "⚠️ AI is currently overloaded.";
 
-        // If backend blocked request because owner disabled AI
         if (err.message.includes("AI is disabled")) {
           message = "🚫 AI is disabled by the room owner.";
+        } else if (err.message.includes("Room not found")) {
+          message = "⚠️ AI is only available in saved rooms.";
         }
 
         setMessages((prev) => [
@@ -319,6 +371,18 @@ export default function RoomChat({ room, displayName }) {
       } finally {
         setAiThinking(false);
       }
+    } else if (allowAI && !backendRoomId) {
+      // Optional info when room isn't persisted yet
+      setMessages((prev) => [
+        ...(Array.isArray(prev) ? prev : []),
+        {
+          _id: `sys-no-backend-${Date.now()}`,
+          role: "system",
+          text: "⚠️ AI can only be used in rooms that are saved on the server.",
+          senderGuestName: "System",
+          createdAt: new Date().toISOString(),
+        },
+      ]);
     }
   };
 
@@ -365,18 +429,101 @@ export default function RoomChat({ room, displayName }) {
     });
   };
 
+  // 🔗 open file picker
   const handleMediaClick = () => {
-    alert("Media upload will be available soon.");
+    if (fileInputRef.current) {
+      fileInputRef.current.click();
+    }
+  };
+
+  // 📄 open files in a new tab (PDF/doc/etc) – let browser handle preview/download
+  const handleOpenFileInNewTab = (url) => {
+    if (!url) return;
+    try {
+      window.open(url, "_blank", "noopener,noreferrer");
+    } catch (e) {
+      console.error("Failed to open file", e);
+      toast.error("Unable to open file.");
+    }
+  };
+
+  // 📤 upload and emit message (no local setMessages)
+  const handleFileSelected = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !roomId) return;
+
+    // reset input so selecting same file again works
+    e.target.value = "";
+
+    try {
+      setUploading(true);
+      const toastId = toast.loading("Uploading...");
+
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const res = await fetch(UPLOAD_URL, {
+        method: "POST",
+        body: formData,
+      });
+
+      if (!res.ok) {
+        const txt = await res.text();
+        throw new Error(`Upload failed: ${txt}`);
+      }
+
+      const data = await res.json();
+      const mediaUrl = data.url;
+      const mediaType =
+        data.resource_type === "image"
+          ? "image"
+          : data.resource_type === "video"
+          ? "video"
+          : "file";
+
+      const payload = {
+        roomId: backendRoomId || roomId,
+        text: "",
+        senderUserId: currentUserId,
+        senderGuestName: currentUserName,
+        role: "user",
+        mediaUrl,
+        mediaType,
+        mediaName: data.fileName || file.name || null,
+        mimeType: data.mimeType || file.type || null,
+      };
+
+      socket.emit("send_message", payload);
+
+      toast.success("Uploaded!", { id: toastId });
+    } catch (err) {
+      console.error("Upload error:", err);
+      toast.error("Upload failed. Please try again.");
+    } finally {
+      setUploading(false);
+    }
   };
 
   const startLongPress = (messageId) => {
     if (!messageId) return;
 
-    if (longPressTimerRef.current) clearTimeout(longPressTimerRef.current);
-    longPressTimerRef.current = setTimeout(
-      () => setActiveReactionMessageId(messageId),
-      350
-    );
+    // clear any previous timer
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+    }
+
+    longPressTriggeredRef.current = false;
+
+    longPressTimerRef.current = setTimeout(() => {
+      // mark that this press actually triggered the long-press behaviour
+      longPressTriggeredRef.current = true;
+
+      // 👇 always OPEN on this message (no toggle here)
+      setActiveReactionMessageId(messageId);
+
+      // store open time so the very next tap doesn't immediately close it
+      reactionOpenedAtRef.current = Date.now();
+    }, 350);
   };
 
   const cancelLongPress = () => {
@@ -386,13 +533,75 @@ export default function RoomChat({ room, displayName }) {
     }
   };
 
+  const handleBubbleClick = (message) => {
+    // If this click comes right after a long press, ignore so bar stays visible
+    if (longPressTriggeredRef.current) {
+      longPressTriggeredRef.current = false;
+      return;
+    }
+
+    const hasMedia = !!message.mediaUrl;
+    if (!hasMedia) return;
+
+    if (message.mediaType === "image" || !message.mediaType) {
+      setExpandedMedia({ url: message.mediaUrl, type: "image" });
+    } else if (message.mediaType === "video") {
+      setExpandedMedia({ url: message.mediaUrl, type: "video" });
+    } else {
+      // any other type → open in new tab / preview
+      handleOpenFileInNewTab(message.mediaUrl);
+    }
+  };
+
+  // Helper to build a nice file label
+  const getFileLabel = (message) => {
+    if (message.mediaName) return message.mediaName;
+    if (message.fileName) return message.fileName;
+    if (message.mediaUrl) {
+      try {
+        const url = new URL(message.mediaUrl);
+        const parts = url.pathname.split("/");
+        const last = parts[parts.length - 1];
+        return last || "Open document";
+      } catch {
+        return "Open document";
+      }
+    }
+    return "Open document";
+  };
+
   return (
-    // FIX: Using h-full here means it will fill the 'flex-1 min-h-0' container from Rooms.jsx
-    // 'flex flex-col' allows us to separate header, messages, and input.
     <div
       className={`h-full flex flex-col rounded-xl overflow-hidden border border-gray-200 dark:border-gray-700 shadow-sm chat-themable-container room-chat-container ${themeClass}`}
     >
-      {/* Header - shrink-0 ensures it never collapses */}
+      {/* Lightbox overlay for enlarged image / video */}
+      {expandedMedia && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/70"
+          onClick={() => setExpandedMedia(null)}
+        >
+          <div
+            className="max-w-3xl max-h-[90vh] p-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {expandedMedia.type === "image" ? (
+              <img
+                src={expandedMedia.url}
+                alt="preview"
+                className="max-h-[85vh] w-full object-contain rounded-lg"
+              />
+            ) : (
+              <video
+                src={expandedMedia.url}
+                controls
+                className="max-h-[85vh] w-full object-contain rounded-lg"
+              />
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* Header */}
       <div className="px-3 sm:px-4 py-3 border-b border-gray-200 dark:border-gray-700 bg-gray-50/70 dark:bg-gray-900/70 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between shrink-0">
         <div className="min-w-0">
           <h2 className="text-xs sm:text-sm font-bold text-slate-800 dark:text-slate-100 flex flex-wrap items-center gap-1 sm:gap-2">
@@ -429,7 +638,7 @@ export default function RoomChat({ room, displayName }) {
         </div>
       </div>
 
-      {/* Messages Area - flex-1 min-h-0 ensures THIS area scrolls, not the page */}
+      {/* Messages Area */}
       <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-4 scrollbar-thin scrollbar-thumb-gray-300 dark:scrollbar-thumb-gray-600 min-h-0 chat-messages-area">
         {Array.isArray(messages) &&
           messages.map((m, index) => {
@@ -442,6 +651,8 @@ export default function RoomChat({ room, displayName }) {
               m.role !== "system";
             const isAi = m.role === "ai";
             const isSystem = m.role === "system";
+
+            const canDelete = isMe && !!m._id;
 
             const timeLabel = m.createdAt
               ? new Date(m.createdAt).toLocaleTimeString([], {
@@ -459,6 +670,12 @@ export default function RoomChat({ room, displayName }) {
               if (r.displayName) acc[k].names.push(r.displayName);
               return acc;
             }, {});
+
+            const hasMedia = !!m.mediaUrl;
+            const isGenericAttachmentText =
+              hasMedia &&
+              m.text &&
+              m.text.trim().toLowerCase().includes("attachment");
 
             if (isSystem) {
               return (
@@ -503,18 +720,55 @@ export default function RoomChat({ room, displayName }) {
                     onMouseLeave={cancelLongPress}
                     onTouchStart={() => startLongPress(uiId)}
                     onTouchEnd={cancelLongPress}
+                    onClick={() => handleBubbleClick(m)}
                   >
-                    <span
-                      className={
-                        currentTheme === "love"
-                          ? "glow-text-love"
-                          : currentTheme === "sunset"
-                          ? "glow-text-sunset"
-                          : ""
-                      }
-                    >
-                      {m.text}
-                    </span>
+                    {/* MEDIA FIRST */}
+                    {hasMedia && (
+                      <div className="mb-1">
+                        {m.mediaType === "image" || !m.mediaType ? (
+                          <img
+                            src={m.mediaUrl}
+                            alt={getFileLabel(m)}
+                            className="max-h-64 rounded-lg object-contain border border-white/20"
+                          />
+                        ) : m.mediaType === "video" ? (
+                          <video
+                            src={m.mediaUrl}
+                            className="max-h-64 rounded-lg object-contain border border-white/20"
+                            muted
+                            controls={false}
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenFileInNewTab(m.mediaUrl);
+                            }}
+                            className="text-xs text-blue-100 underline"
+                          >
+                            📄 {getFileLabel(m)}
+                          </button>
+                        )}
+                      </div>
+                    )}
+
+                    {/* TEXT / CAPTION */}
+                    {m.text && !isGenericAttachmentText && (
+                      <span
+                        className={
+                          currentTheme === "love"
+                            ? "glow-text-love"
+                            : currentTheme === "sunset"
+                            ? "glow-text-sunset"
+                            : ""
+                        }
+                      >
+                        {m.text}
+                      </span>
+                    )}
+
+                    {!m.text && !hasMedia && isAi && <span>...</span>}
                   </div>
 
                   <div className="flex items-center flex-wrap gap-2 mt-1 mx-1">
@@ -545,7 +799,10 @@ export default function RoomChat({ room, displayName }) {
                   </div>
 
                   {activeReactionMessageId === uiId && (
-                    <div className="mt-1 flex flex-wrap gap-1 text-xs bg-black/25 px-2 py-1 rounded-full">
+                    <div
+                      data-reaction-bar="true"
+                      className="mt-1 mb-1 flex flex-wrap items-center gap-1 text-xs bg-black/25 px-2 py-1 rounded-full"
+                    >
                       {REACTION_EMOJIS.map((emoji) => (
                         <button
                           key={emoji}
@@ -561,6 +818,21 @@ export default function RoomChat({ room, displayName }) {
                           {emoji}
                         </button>
                       ))}
+
+                      {canDelete && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            socket.emit("delete_message", {
+                              messageId: m._id,
+                            });
+                            setActiveReactionMessageId(null);
+                          }}
+                          className="ml-2 px-2 py-0.5 text-[11px] rounded-full bg-red-600/80 hover:bg-red-700 text-white"
+                        >
+                          🗑 Delete
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -569,7 +841,7 @@ export default function RoomChat({ room, displayName }) {
           })}
 
         {aiThinking && (
-          <div className="flex justify-start w-full">
+          <div className="flex justify-start w-full mb-4">
             <div className="bg-black/25 text-white text-xs px-3 py-2 rounded-2xl rounded-tl-none border border-white/40 shadow-md">
               LC_Ai is thinking...
             </div>
@@ -577,26 +849,38 @@ export default function RoomChat({ room, displayName }) {
         )}
 
         {typingUser && (
-          <div className="text-[11px] text-slate-100 italic ml-1">
+          <div className="text-[11px] text-slate-100 italic ml-1 mb-2">
             {typingUser} is typing...
           </div>
         )}
 
+        {/* Spacer + scroll anchor so there's room below last bubble for reaction bar */}
+        <div style={{ height: "40px" }} />
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input - shrink-0 ensures it stays anchored at the bottom */}
+      {/* Input */}
       <form
         onSubmit={handleSend}
         className="p-2 sm:p-3 bg-black/40 dark:bg-gray-900/90 border-t border-gray-200/30 dark:border-gray-700 shrink-0 chat-input-area"
       >
+        {/* Hidden file input */}
+        <input
+          type="file"
+          ref={fileInputRef}
+          className="hidden"
+          accept="image/*,video/*" // ⬅️ only photos & videos
+          onChange={handleFileSelected}
+        />
+
         <div className="flex flex-wrap items-center gap-1 sm:gap-2 mb-2 text-lg sm:text-xl">
           <button
             type="button"
             onClick={handleMediaClick}
-            className="px-2 py-1 text-xs sm:text-sm rounded-lg border border-gray-200/40 dark:border-gray-700 bg-black/30 dark:bg-gray-800 hover:bg-black/40 dark:hover:bg-gray-700 text-gray-100"
+            disabled={uploading}
+            className="px-2 py-1 text-xs sm:text-sm rounded-lg border border-gray-200/40 dark:border-gray-700 bg-black/30 dark:bg-gray-800 hover:bg-black/40 dark:hover:bg-gray-700 text-gray-100 disabled:opacity-60"
           >
-            📎
+            {uploading ? "Uploading..." : "📎"}
           </button>
           {INPUT_EMOJIS.map((em) => (
             <button

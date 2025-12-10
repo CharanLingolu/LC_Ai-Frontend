@@ -5,6 +5,7 @@ import RoomCall from "../components/RoomCall";
 import { useAuth } from "../context/AuthContext";
 import { useRooms } from "../context/RoomContext";
 import { socket } from "../socket";
+import toast from "react-hot-toast";
 
 const GUEST_ID_KEY = "lc_ai_guest_id";
 const GUEST_NAME_KEY = "lc_ai_guest_name";
@@ -124,6 +125,7 @@ export default function Rooms() {
           if (byCode) {
             localStorage.setItem(LAST_ROOM_KEY, byCode.id);
             setPendingRoomCode(null);
+            toast.success(`Room "${byCode.name}" created 🎉`);
             return byCode.id;
           }
         }
@@ -172,6 +174,7 @@ export default function Rooms() {
       });
 
       setSelectedRoomId(normalized.id);
+      toast.success(`Joined room "${normalized.name}" as guest ✅`);
     };
 
     const handleRoomCreateFailed = (payload) => {
@@ -180,7 +183,7 @@ export default function Rooms() {
         (payload?.reason === "LIMIT_REACHED"
           ? "You can only create up to 5 rooms."
           : "Failed to create room.");
-      alert(msg);
+      toast.error(msg);
     };
 
     socket.on("room_list_update", handleUpdate);
@@ -221,6 +224,10 @@ export default function Rooms() {
         }
 
         return updated;
+      });
+
+      toast(allowAI ? "🤖 AI enabled for this room" : "🚫 AI disabled", {
+        icon: "✨",
       });
     };
 
@@ -270,18 +277,15 @@ export default function Rooms() {
   useEffect(() => {
     if (!selectedRoomId) return;
 
-    // Use only the normalized id as the room key
     const roomKey = selectedRoomId;
     const displayName =
       isAuthenticated && user?.name ? user.name : guestName || "Guest";
 
-    // Join once for this selection
     socket.emit("join_room", {
       roomId: roomKey,
       displayName,
     });
 
-    // Leave when the user navigates away from this room
     return () => {
       socket.emit("leave_room", { roomId: roomKey });
     };
@@ -295,12 +299,15 @@ export default function Rooms() {
     if (e?.preventDefault) e.preventDefault();
 
     if (!isAuthenticated) {
-      alert("Only registered users can create rooms!");
+      toast.error("Only registered users can create rooms!");
       return;
     }
 
     const name = newRoomName.trim();
-    if (!name) return;
+    if (!name) {
+      toast("Give your room a cute name first 🧃");
+      return;
+    }
 
     const ownerEmail = user.email;
 
@@ -308,7 +315,7 @@ export default function Rooms() {
       (r) => r.ownerId === ownerEmail
     ).length;
     if (ownedRoomsCount >= 5) {
-      alert("You can only create up to 5 rooms.");
+      toast.error("You can only create up to 5 rooms.");
       return;
     }
 
@@ -327,15 +334,19 @@ export default function Rooms() {
 
     setPendingRoomCode(code);
     setNewRoomName("");
+    toast.loading("Creating room...", { id: "create-room" });
   };
 
   const handleJoinRoom = (code) => {
     const trimmed = code.trim();
-    if (!trimmed) return;
+    if (!trimmed) {
+      toast("Enter a room code first ✨");
+      return;
+    }
 
     socket.emit("verify_room_code", trimmed, async (serverRoom) => {
       if (!serverRoom) {
-        alert("❌ Room not found! Check the code.");
+        toast.error("Room not found. Check the code again.");
         return;
       }
 
@@ -359,7 +370,7 @@ export default function Rooms() {
           );
 
           if (!res.ok) {
-            alert("Failed to join room. Please try again.");
+            toast.error("Failed to join room. Please try again.");
             return;
           }
 
@@ -382,15 +393,22 @@ export default function Rooms() {
 
           setSelectedRoomId(normalized.id);
           localStorage.setItem(LAST_ROOM_KEY, normalized.id);
+          toast.success(`Joined room "${normalized.name}" ✅`);
         } catch (err) {
           console.error("Join room error:", err);
-          alert("Failed to join room. Please try again.");
+          toast.error("Failed to join room. Please try again.");
         }
       } else {
-        const name = prompt(`Enter your name to join "${roomName}":`);
-        if (!name || !name.trim()) return;
+        // Guest join using inline name input instead of window.prompt
+        const existingName = guestName && guestName.trim();
+        const cleanName = existingName;
 
-        const cleanName = name.trim();
+        if (!cleanName) {
+          toast.error(
+            `Add your name in the "Your name" box before joining "${roomName}".`
+          );
+          return;
+        }
 
         let guestId = localStorage.getItem(GUEST_ID_KEY);
         if (!guestId) {
@@ -409,6 +427,8 @@ export default function Rooms() {
           name: cleanName,
           guestId,
         });
+
+        toast.success(`Joining "${roomName}" as ${cleanName} ✨`);
       }
     });
   };
@@ -431,6 +451,7 @@ export default function Rooms() {
       return next;
     });
     socket.emit("rename_room", { roomId, newName });
+    toast.success("Room renamed ✏️");
   };
 
   const deleteRoom = (roomId) => {
@@ -455,6 +476,7 @@ export default function Rooms() {
     }
 
     socket.emit("delete_room", roomId);
+    toast("Room deleted 🗑️");
   };
 
   const toggleAI = (roomId) => {
@@ -486,6 +508,7 @@ export default function Rooms() {
     setGuestName("");
     setRooms([]);
     setSelectedRoomId(null);
+    toast("Guest session cleared 👋");
     window.location.reload();
   };
 
@@ -547,9 +570,37 @@ export default function Rooms() {
               🤖 {room.allowAI ? "Disable AI" : "Enable AI"}
             </button>
 
+            {/* Toast-based delete confirmation instead of window.confirm */}
             <button
               onClick={() => {
-                if (confirm("Delete room?")) deleteRoom(room.id);
+                toast.custom(
+                  (t) => (
+                    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 shadow-xl text-xs max-w-xs">
+                      <p className="mb-2 text-gray-800 dark:text-gray-100">
+                        Delete room{" "}
+                        <span className="font-semibold">"{room.name}"</span>?
+                      </p>
+                      <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => toast.dismiss(t.id)}
+                          className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-200"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={() => {
+                            deleteRoom(room.id);
+                            toast.dismiss(t.id);
+                          }}
+                          className="px-2 py-1 rounded bg-red-500 text-white"
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </div>
+                  ),
+                  { duration: 5000 }
+                );
               }}
               className="text-red-600 w-full text-left px-2 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
             >
@@ -644,6 +695,18 @@ export default function Rooms() {
                 +
               </button>
             </form>
+          )}
+
+          {/* Guest name input block instead of window.prompt */}
+          {!isAuthenticated && (
+            <div className="flex gap-1">
+              <input
+                value={guestName}
+                onChange={(e) => setGuestName(e.target.value)}
+                placeholder="Your name"
+                className="flex-1 min-w-0 px-2 py-1.5 text-xs rounded border border-gray-200 dark:border-gray-700 dark:bg-gray-800 outline-none"
+              />
+            </div>
           )}
 
           <div

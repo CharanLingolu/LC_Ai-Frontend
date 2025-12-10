@@ -1,3 +1,4 @@
+// src/main.jsx
 import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
@@ -17,11 +18,18 @@ import Rooms from "./pages/Rooms";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import JoinRoom from "./pages/JoinRoom";
+import { Toaster } from "react-hot-toast";
 
 import { GoogleOAuthProvider } from "@react-oauth/google";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
+    <Toaster
+      position="top-center"
+      toastOptions={{
+        style: { fontSize: "0.9rem" },
+      }}
+    />
     <GoogleOAuthProvider clientId="487497643654-ve9eheqj03qotm6qeih2ktetmol34012.apps.googleusercontent.com">
       <ThemeProvider>
         <AuthProvider>
@@ -36,7 +44,6 @@ ReactDOM.createRoot(document.getElementById("root")).render(
                   <Route path="rooms" element={<Rooms />} />
                   <Route path="login" element={<Login />} />
                   <Route path="signup" element={<Signup />} />
-                  {/* 🔽 no props here, JoinRoom uses context */}
                   <Route path="join/:roomId" element={<JoinRoom />} />
                 </Route>
               </Routes>

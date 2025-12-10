@@ -12,6 +12,23 @@ const GUEST_NAME_KEY = "lc_ai_guest_name";
 const LAST_ROOM_KEY = "lc_ai_last_room";
 const GUEST_ROOMS_KEY = "lc_ai_guest_rooms";
 const USER_ROOMS_PREFIX = "lc_ai_user_rooms_";
+const HIDDEN_ROOMS_PREFIX = "lc_ai_hidden_rooms_"; // per-user hidden rooms
+
+// Toast durations
+const TOAST_DURATION = {
+  success: 3000,
+  info: 3000,
+  error: 5000,
+};
+
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
+const DEFAULT_JOIN_PATHS = [
+  "/api/rooms/join",
+  "/rooms/join",
+  "/api/rooms/join/verify",
+  "/api/join-room",
+  "/join/room",
+];
 
 function normalizeRoom(room) {
   if (!room) return null;
@@ -45,20 +62,93 @@ export default function Rooms() {
     return localStorage.getItem(GUEST_NAME_KEY) || "";
   });
 
-  // When user creates a room we store the code here until the server
-  // broadcasts the updated room list — then we detect it and auto-select.
   const [pendingRoomCode, setPendingRoomCode] = useState(null);
 
-  // Refs to avoid duplicate toast creation and to persist pending code across renders
+  // Refs to handle mutable data inside listeners without re-triggering effects
   const createToastIdRef = useRef(null);
   const pendingRoomCodeRef = useRef(null);
+  const hiddenRoomsRef = useRef([]);
 
-  // Track whether listeners are currently registered so we don't double-register
-  const listenersRegisteredRef = useRef(false);
+  // Refs for User data so the socket listener can see them without stale closures
+  const userRef = useRef(user);
+  const isAuthenticatedRef = useRef(isAuthenticated);
+
+  // hidden rooms set
+  const [hiddenRooms, setHiddenRooms] = useState(() => {
+    const key = getHiddenKey();
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
 
   const selectedRoom = rooms.find((r) => r.id === selectedRoomId) || null;
 
-  // ---------- 1) Restore rooms from localStorage on mount ----------
+  // ---------- helper: hidden rooms per user ----------
+  function getHiddenKey() {
+    if (isAuthenticated && user?.email) return HIDDEN_ROOMS_PREFIX + user.email;
+    const guestId = localStorage.getItem(GUEST_ID_KEY) || "anon";
+    return HIDDEN_ROOMS_PREFIX + "guest_" + guestId;
+  }
+
+  function saveHiddenRooms(next) {
+    const key = getHiddenKey();
+    try {
+      localStorage.setItem(key, JSON.stringify(next));
+    } catch {}
+    setHiddenRooms(next);
+  }
+
+  function hideRoomForMe(roomId) {
+    if (!roomId) return;
+    const next = Array.from(new Set([...(hiddenRooms || []), String(roomId)]));
+    saveHiddenRooms(next);
+
+    setRooms((prev) => prev.filter((r) => String(r.id) !== String(roomId)));
+
+    if (String(selectedRoomId) === String(roomId)) {
+      setSelectedRoomId(null);
+      try {
+        localStorage.removeItem(LAST_ROOM_KEY);
+      } catch {}
+    }
+
+    try {
+      socket.emit("leave_room", { roomId });
+    } catch {}
+
+    toast.success("You left the room.", {
+      duration: TOAST_DURATION.success,
+    });
+  }
+
+  function unhideRoomForMe(roomId) {
+    if (!roomId) return;
+    const next = (hiddenRooms || []).filter(
+      (id) => String(id) !== String(roomId)
+    );
+    saveHiddenRooms(next);
+  }
+
+  function applyHiddenFilter(serverRooms) {
+    const currentHidden = hiddenRoomsRef.current || [];
+    const hiddenMap = new Set(currentHidden.map((h) => String(h)));
+    return (serverRooms || [])
+      .map(normalizeRoom)
+      .filter(Boolean)
+      .filter((r) => !hiddenMap.has(String(r.id)));
+  }
+
+  // ---------- 1. Sync State to Refs ----------
+  useEffect(() => {
+    hiddenRoomsRef.current = hiddenRooms;
+    userRef.current = user;
+    isAuthenticatedRef.current = isAuthenticated;
+  }, [hiddenRooms, user, isAuthenticated]);
+
+  // ---------- 2. Restore rooms from localStorage ----------
   useEffect(() => {
     if (isAuthenticated && user?.email) {
       const key = getUserRoomsKey(user.email);
@@ -71,7 +161,10 @@ export default function Rooms() {
               .map(normalizeRoom)
               .filter(Boolean);
             if (normalized.length > 0) {
-              setRooms(normalized);
+              const visible = normalized.filter(
+                (r) => !hiddenRooms.includes(String(r.id))
+              );
+              setRooms(visible);
             }
           } catch (e) {
             console.warn("Failed to parse user rooms from storage:", e);
@@ -85,56 +178,136 @@ export default function Rooms() {
           const parsed = JSON.parse(stored);
           const normalized = (parsed || []).map(normalizeRoom).filter(Boolean);
           if (normalized.length > 0) {
-            setRooms(normalized);
+            const visible = normalized.filter(
+              (r) => !hiddenRooms.includes(String(r.id))
+            );
+            setRooms(visible);
           }
         } catch (e) {
           console.warn("Failed to parse guest rooms from storage:", e);
         }
       }
     }
-  }, [isAuthenticated, user?.email, setRooms]);
+  }, [isAuthenticated, user?.email, setRooms, hiddenRooms]);
 
-  // ---------- 2) Socket listeners ----------
+  // ---------- 3. Registration Effect ----------
   useEffect(() => {
-    // Handler definitions (kept inside the effect so cleanup has same references)
+    const performRegistration = () => {
+      if (isAuthenticated && user) {
+        socket.emit("register_user", {
+          userId: user._id || user.id,
+          email: user.email,
+        });
+        socket.emit("request_room_list");
+      } else {
+        const storedGuestId = localStorage.getItem(GUEST_ID_KEY);
+        const storedGuestName = localStorage.getItem(GUEST_NAME_KEY);
+
+        if (storedGuestId) {
+          setIsGuest(true);
+          if (storedGuestName) setGuestName(storedGuestName);
+
+          const lastRoomId = localStorage.getItem(LAST_ROOM_KEY);
+          const guestRoomsStr = localStorage.getItem(GUEST_ROOMS_KEY);
+          if (lastRoomId && guestRoomsStr) {
+            try {
+              const guestRooms = JSON.parse(guestRoomsStr);
+              const match = guestRooms.find(
+                (r) => String(r.id) === String(lastRoomId)
+              );
+              if (match && match.code) {
+                socket.emit("join_room_guest", {
+                  code: match.code,
+                  name: storedGuestName || "Guest",
+                  guestId: storedGuestId,
+                });
+              }
+            } catch (e) {}
+          }
+
+          socket.emit("register_user", {
+            userId: storedGuestId,
+            email: null,
+          });
+          socket.emit("request_room_list");
+        }
+      }
+    };
+
+    performRegistration();
+  }, [isAuthenticated, user?._id, user?.email, isGuest]);
+
+  // ---------- 4. Socket Listeners Effect ----------
+  useEffect(() => {
     const handleUpdate = (serverRooms) => {
-      // Only process for authenticated users or guests
-      if (!isAuthenticated && !isGuest) return;
+      const currentUser = userRef.current;
+      const isAuth = isAuthenticatedRef.current;
 
-      const normalized = (serverRooms || []).map(normalizeRoom).filter(Boolean);
+      let normalized = applyHiddenFilter(serverRooms);
 
-      // If server sent empty list, don't wipe local (protect guest rooms)
-      if (normalized.length === 0) return;
+      let myJoinedRoomIds = new Set();
+      try {
+        const storageKey = localStorage.getItem(GUEST_ID_KEY)
+          ? GUEST_ROOMS_KEY
+          : isAuth && currentUser?.email
+          ? getUserRoomsKey(currentUser.email)
+          : null;
+
+        if (storageKey) {
+          const stored = localStorage.getItem(storageKey) || "[]";
+          const parsed = JSON.parse(stored);
+          parsed.forEach((r) => {
+            const nr = normalizeRoom(r);
+            if (nr && nr.id) myJoinedRoomIds.add(String(nr.id));
+          });
+        }
+      } catch (e) {}
+
+      normalized = normalized.filter((room) => {
+        // Use currentUser from Ref to avoid stale closure
+        const isOwner =
+          isAuth && currentUser?.email && room.ownerId === currentUser.email;
+        const hasJoined = myJoinedRoomIds.has(String(room.id));
+        return isOwner || hasJoined;
+      });
 
       setRooms((prev) => {
         const withPresence = normalized.map((room) => {
           const prevMatch = prev.find((p) => p.id === room.id);
+          let stableCount = room.onlineCount;
           if (prevMatch && typeof prevMatch.onlineCount === "number") {
-            return { ...room, onlineCount: prevMatch.onlineCount };
+            if (
+              stableCount === undefined ||
+              (stableCount === 0 && prevMatch.onlineCount > 0)
+            ) {
+              stableCount = prevMatch.onlineCount;
+            }
           }
-          return room;
+          return { ...room, onlineCount: stableCount };
         });
 
-        // 🔹 Persist latest room state (including allowAI) for this user/guest
-        if (isAuthenticated && user?.email) {
-          const key = getUserRoomsKey(user.email);
+        if (isAuth && currentUser?.email) {
+          const key = getUserRoomsKey(currentUser.email);
           if (key) {
             try {
               localStorage.setItem(key, JSON.stringify(withPresence));
-            } catch (e) {
-              /* ignore storage errors */
-            }
+            } catch (e) {}
           }
-        } else if (isGuest) {
-          try {
-            localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(withPresence));
-          } catch (e) {}
+        } else {
+          const storedGuestId = localStorage.getItem(GUEST_ID_KEY);
+          if (storedGuestId) {
+            try {
+              localStorage.setItem(
+                GUEST_ROOMS_KEY,
+                JSON.stringify(withPresence)
+              );
+            } catch (e) {}
+          }
         }
 
         return withPresence;
       });
 
-      // If pending room creation, auto-select on arrival
       if (pendingRoomCodeRef.current) {
         const codeToFind = pendingRoomCodeRef.current;
         const byCode = normalized.find(
@@ -149,7 +322,9 @@ export default function Rooms() {
               toast.dismiss(createToastIdRef.current);
               createToastIdRef.current = null;
             }
-            toast.success(`Room "${byCode.name}" created 🎉`);
+            toast.success(`Room "${byCode.name}" created 🎉`, {
+              duration: TOAST_DURATION.success,
+            });
             setPendingRoomCode(null);
             pendingRoomCodeRef.current = null;
             setSelectedRoomId(byCode.id);
@@ -158,7 +333,6 @@ export default function Rooms() {
         }
       }
 
-      // Preserve previous selection if possible
       setSelectedRoomId((prevId) => {
         if (prevId) {
           const prevExists = normalized.find((r) => r.id === prevId);
@@ -169,22 +343,16 @@ export default function Rooms() {
             return prevExists.id;
           }
         }
-
         const storedLast = localStorage.getItem(LAST_ROOM_KEY);
         const matchStored = storedLast
           ? normalized.find((r) => r.id === storedLast)
           : null;
-
         if (matchStored) {
           try {
             localStorage.setItem(LAST_ROOM_KEY, matchStored.id);
           } catch (e) {}
           return matchStored.id;
         }
-
-        try {
-          localStorage.removeItem(LAST_ROOM_KEY);
-        } catch (e) {}
         return null;
       });
     };
@@ -193,6 +361,7 @@ export default function Rooms() {
       const normalized = normalizeRoom(room);
       if (!normalized) return;
 
+      unhideRoomForMe(normalized.id);
       setIsGuest(true);
       if (displayName) {
         setGuestName(displayName);
@@ -200,7 +369,6 @@ export default function Rooms() {
           localStorage.setItem(GUEST_NAME_KEY, displayName);
         } catch (e) {}
       }
-
       try {
         localStorage.setItem(GUEST_ID_KEY, userId);
         localStorage.setItem(LAST_ROOM_KEY, normalized.id);
@@ -214,24 +382,18 @@ export default function Rooms() {
         } catch (e) {}
         return next;
       });
-
       setSelectedRoomId(normalized.id);
-      toast.success(`Joined room "${normalized.name}" as guest ✅`);
     };
 
     const handleRoomCreateFailed = (payload) => {
-      const msg =
-        payload?.message ||
-        (payload?.reason === "LIMIT_REACHED"
-          ? "You can only create up to 5 rooms."
-          : "Failed to create room.");
+      const msg = payload?.message || "Failed to create room.";
       if (createToastIdRef.current) {
         toast.dismiss(createToastIdRef.current);
         createToastIdRef.current = null;
       }
       setPendingRoomCode(null);
       pendingRoomCodeRef.current = null;
-      toast.error(msg);
+      toast.error(msg, { duration: TOAST_DURATION.error });
     };
 
     const handleActiveUsersUpdate = ({ roomId, count }) => {
@@ -241,7 +403,10 @@ export default function Rooms() {
             room.id === roomId ||
             String(room._id) === String(roomId) ||
             String(room.code) === String(roomId);
-          return matches ? { ...room, onlineCount: count } : room;
+          if (matches && room.onlineCount !== count) {
+            return { ...room, onlineCount: count };
+          }
+          return room;
         })
       );
     };
@@ -256,59 +421,33 @@ export default function Rooms() {
           return matches ? { ...room, allowAI } : room;
         });
 
-        // Persist updated allowAI to localStorage
-        if (isAuthenticated && user?.email) {
-          const key = getUserRoomsKey(user.email);
-          if (key) {
+        const currentUser = userRef.current;
+        const isAuth = isAuthenticatedRef.current;
+
+        if (isAuth && currentUser?.email) {
+          const key = getUserRoomsKey(currentUser.email);
+          if (key)
             try {
               localStorage.setItem(key, JSON.stringify(updated));
             } catch (e) {}
-          }
-        } else if (isGuest) {
+        } else {
           try {
             localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(updated));
           } catch (e) {}
         }
-
         return updated;
       });
-
       toast(allowAI ? "🤖 AI enabled for this room" : "🚫 AI disabled", {
         icon: "✨",
+        duration: TOAST_DURATION.info,
       });
     };
 
-    // Register listeners
     socket.on("room_list_update", handleUpdate);
     socket.on("guest_joined_success", handleGuestSuccess);
     socket.on("room_create_failed", handleRoomCreateFailed);
     socket.on("active_users_update", handleActiveUsersUpdate);
     socket.on("room_ai_toggled", handleRoomAIToggled);
-
-    listenersRegisteredRef.current = true;
-
-    // Register user & request list
-    if (isAuthenticated && user) {
-      socket.emit("register_user", {
-        userId: user._id || user.id,
-        email: user.email,
-      });
-      socket.emit("request_room_list");
-    } else {
-      const storedGuestId = localStorage.getItem(GUEST_ID_KEY);
-      const storedGuestName = localStorage.getItem(GUEST_NAME_KEY);
-
-      if (storedGuestId) {
-        setIsGuest(true);
-        if (storedGuestName) setGuestName(storedGuestName);
-
-        socket.emit("register_user", {
-          userId: storedGuestId,
-          email: null,
-        });
-        socket.emit("request_room_list");
-      }
-    }
 
     return () => {
       socket.off("room_list_update", handleUpdate);
@@ -316,12 +455,10 @@ export default function Rooms() {
       socket.off("room_create_failed", handleRoomCreateFailed);
       socket.off("active_users_update", handleActiveUsersUpdate);
       socket.off("room_ai_toggled", handleRoomAIToggled);
-      listenersRegisteredRef.current = false;
     };
-    // We want this effect to re-register on auth change / guest state / user change
-  }, [isAuthenticated, isGuest, user?.email, user, setRooms, pendingRoomCode]);
+  }, []);
 
-  // ---------- 3) Clear when fully logged out and not a guest ----------
+  // ---------- Clear when logged out ----------
   useEffect(() => {
     if (!isAuthenticated && !isGuest) {
       setRooms([]);
@@ -330,7 +467,7 @@ export default function Rooms() {
     }
   }, [isAuthenticated, isGuest, setRooms]);
 
-  // ---------- 4) JOIN / LEAVE ROOM (for presence) ----------
+  // ---------- Presence join/leave ----------
   useEffect(() => {
     if (!selectedRoomId) return;
 
@@ -338,13 +475,16 @@ export default function Rooms() {
     const displayName =
       isAuthenticated && user?.name ? user.name : guestName || "Guest";
 
-    socket.emit("join_room", {
-      roomId: roomKey,
-      displayName,
-    });
+    const joinCurrentRoom = () => {
+      socket.emit("join_room", { roomId: roomKey, displayName });
+    };
+
+    joinCurrentRoom();
+    socket.on("connect", joinCurrentRoom);
 
     return () => {
       socket.emit("leave_room", { roomId: roomKey });
+      socket.off("connect", joinCurrentRoom);
     };
   }, [selectedRoomId, isAuthenticated, user?.name, guestName]);
 
@@ -354,30 +494,30 @@ export default function Rooms() {
   // ---------- CREATE ROOM ----------
   const handleCreateRoom = (e) => {
     if (e?.preventDefault) e.preventDefault();
-
     if (!isAuthenticated) {
-      toast.error("Only registered users can create rooms!");
+      toast.error("Only registered users can create rooms!", {
+        duration: TOAST_DURATION.error,
+      });
       return;
     }
-
     const name = newRoomName.trim();
     if (!name) {
-      toast("Give your room a cute name first 🧃");
+      toast("Give your room a cute name first 🧃", {
+        duration: TOAST_DURATION.info,
+      });
       return;
     }
-
     const ownerEmail = user.email;
-
     const ownedRoomsCount = (rooms || []).filter(
       (r) => r.ownerId === ownerEmail
     ).length;
     if (ownedRoomsCount >= 5) {
-      toast.error("You can only create up to 5 rooms.");
+      toast.error("You can only create up to 5 rooms.", {
+        duration: TOAST_DURATION.error,
+      });
       return;
     }
-
     const code = generateRoomCode();
-
     const newRoomPayload = {
       name,
       allowAI: newRoomAI,
@@ -386,97 +526,120 @@ export default function Rooms() {
       inviteLink: `${window.location.origin}/join`,
       members: [{ id: ownerEmail, name: user.name, role: "owner" }],
     };
-
-    // Show a loading toast with a unique id so we can dismiss later and avoid duplicates
     const toastId = `create-room-${Date.now()}`;
     createToastIdRef.current = toastId;
     toast.loading("Creating room...", { id: toastId });
-
     socket.emit("create_room", newRoomPayload);
-
     setPendingRoomCode(code);
     pendingRoomCodeRef.current = code;
-
     setNewRoomName("");
   };
 
+  // ---------- HELPER: attempt to POST to candidate endpoints ----------
+  async function tryPostToJoinEndpoints(body) {
+    const base = (import.meta.env.VITE_BACKEND_URL || "").replace(/\/$/, "");
+    const endpoints = [
+      `${base}/api/rooms/join`,
+      `${base}/api/rooms/join/verify`,
+      `${base}/api/join-room`,
+      `${base}/rooms/join`,
+      `${base}/join/room`,
+    ];
+    for (const url of endpoints) {
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          credentials: "include",
+        });
+        if (res.status === 404) continue;
+        if (res.status === 204 || res.status === 202)
+          return { ok: true, data: null, url };
+        if (!res.ok) continue;
+        const json = await res.json().catch(() => null);
+        return { ok: true, data: json, url };
+      } catch (err) {
+        continue;
+      }
+    }
+    return { ok: false, data: null };
+  }
+
+  // ---------- JOIN ROOM ----------
   const handleJoinRoom = (code) => {
     const trimmed = code.trim();
     if (!trimmed) {
-      toast("Enter a room code first ✨");
+      toast("Enter a room code first ✨", { duration: TOAST_DURATION.info });
       return;
     }
-
     socket.emit("verify_room_code", trimmed, async (serverRoom) => {
       if (!serverRoom) {
-        toast.error("Room not found. Check the code again.");
+        toast.error("Room not found. Check the code again.", {
+          duration: TOAST_DURATION.error,
+        });
         return;
       }
-
       const roomName = serverRoom.name;
 
       if (isAuthenticated && user) {
         try {
-          const res = await fetch(
-            "https://lc-ai-backend-a080.onrender.com/api/rooms/join",
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                code: trimmed,
-                userId: user._id || user.id,
-                userName: user.name,
-              }),
-            }
-          );
-
-          if (!res.ok) {
-            toast.error("Failed to join room. Please try again.");
+          const token =
+            user?.token || user?.accessToken || user?.authToken || user?.jwt;
+          const headers = {};
+          if (token) headers["Authorization"] = `Bearer ${token}`;
+          const body = {
+            code: trimmed,
+            userId: user._id || user.id,
+            userName: user.name,
+          };
+          const result = await tryPostToJoinEndpoints(body, headers);
+          if (!result.ok) {
+            toast.error("Failed to join room.", {
+              duration: TOAST_DURATION.error,
+            });
             return;
           }
-
-          const joinedRoom = await res.json();
+          const joinedRoom = result.data || serverRoom;
           const normalized = normalizeRoom(joinedRoom);
-
+          unhideRoomForMe(normalized.id);
           setRooms((prev) => {
             const filtered = prev.filter((r) => r.id !== normalized.id);
             const next = [...filtered, normalized];
-
             if (user.email) {
               const key = getUserRoomsKey(user.email);
-              if (key) {
+              if (key)
                 try {
                   localStorage.setItem(key, JSON.stringify(next));
                 } catch (e) {}
-              }
             }
-
             return next;
           });
-
           setSelectedRoomId(normalized.id);
           try {
             localStorage.setItem(LAST_ROOM_KEY, normalized.id);
           } catch (e) {}
-          toast.success(`Joined room "${normalized.name}" ✅`);
+          try {
+            socket.emit("request_room_list");
+          } catch (e) {}
+          toast.success(`Joined room "${normalized.name}" ✅`, {
+            duration: TOAST_DURATION.success,
+          });
         } catch (err) {
-          console.error("Join room error:", err);
-          toast.error("Failed to join room. Please try again.");
+          toast.error("Failed to join room. Please try again.", {
+            duration: TOAST_DURATION.error,
+          });
         }
       } else {
-        // Guest join using inline name input instead of window.prompt
         const existingName = guestName && guestName.trim();
         const cleanName = existingName;
-
         if (!cleanName) {
           toast.error(
-            `Add your name in the "Your name" box before joining "${roomName}".`
+            `Add your name in the "Your name" box before joining "${roomName}".`,
+            { duration: TOAST_DURATION.error }
           );
           return;
         }
-
         let guestId = localStorage.getItem(GUEST_ID_KEY);
         if (!guestId) {
           guestId = `guest_${Date.now()}_${Math.random()
@@ -489,17 +652,18 @@ export default function Rooms() {
         try {
           localStorage.setItem(GUEST_NAME_KEY, cleanName);
         } catch (e) {}
-
         setGuestName(cleanName);
         setIsGuest(true);
-
-        socket.emit("join_room_guest", {
-          code: trimmed,
-          name: cleanName,
-          guestId,
+        try {
+          socket.emit("join_room_guest", {
+            code: trimmed,
+            name: cleanName,
+            guestId,
+          });
+        } catch (e) {}
+        toast.success(`Joining "${roomName}" as ${cleanName} ✨`, {
+          duration: TOAST_DURATION.success,
         });
-
-        toast.success(`Joining "${roomName}" as ${cleanName} ✨`);
       }
     });
   };
@@ -509,55 +673,47 @@ export default function Rooms() {
       const next = prev.map((r) =>
         r.id === roomId ? { ...r, name: newName } : r
       );
-
       if (isAuthenticated && user?.email) {
         const key = getUserRoomsKey(user.email);
-        if (key) {
+        if (key)
           try {
             localStorage.setItem(key, JSON.stringify(next));
           } catch (e) {}
-        }
       } else if (isGuest) {
         try {
           localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(next));
         } catch (e) {}
       }
-
       return next;
     });
     socket.emit("rename_room", { roomId, newName });
-    toast.success("Room renamed ✏️");
+    toast.success("Room renamed ✏️", { duration: TOAST_DURATION.success });
   };
 
   const deleteRoom = (roomId) => {
     setRooms((prev) => {
       const next = prev.filter((r) => r.id !== roomId);
-
       if (isAuthenticated && user?.email) {
         const key = getUserRoomsKey(user.email);
-        if (key) {
+        if (key)
           try {
             localStorage.setItem(key, JSON.stringify(next));
           } catch (e) {}
-        }
       } else if (isGuest) {
         try {
           localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(next));
         } catch (e) {}
       }
-
       return next;
     });
-
     if (selectedRoomId === roomId) {
       setSelectedRoomId(null);
       try {
         localStorage.removeItem(LAST_ROOM_KEY);
       } catch (e) {}
     }
-
     socket.emit("delete_room", roomId);
-    toast("Room deleted 🗑️");
+    toast.success("Room deleted 🗑️", { duration: TOAST_DURATION.success });
   };
 
   const toggleAI = (roomId) => {
@@ -565,20 +721,17 @@ export default function Rooms() {
       const next = prev.map((r) =>
         r.id === roomId ? { ...r, allowAI: !r.allowAI } : r
       );
-
       if (isAuthenticated && user?.email) {
         const key = getUserRoomsKey(user.email);
-        if (key) {
+        if (key)
           try {
             localStorage.setItem(key, JSON.stringify(next));
           } catch (e) {}
-        }
       } else if (isGuest) {
         try {
           localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(next));
         } catch (e) {}
       }
-
       return next;
     });
     socket.emit("toggle_room_ai", roomId);
@@ -595,18 +748,55 @@ export default function Rooms() {
     setGuestName("");
     setRooms([]);
     setSelectedRoomId(null);
-    toast("Guest session cleared 👋");
-    // reload to ensure any server-side ephemeral state is cleared
+    toast.success("Guest session cleared 👋", {
+      duration: TOAST_DURATION.success,
+    });
     window.location.reload();
+  };
+
+  // Exit the **currently selected room**
+  // FIXED: Logic Branching
+  // - Guest -> Completely Leave (Remove from list)
+  // - Owner -> Close View (Keep in list)
+  const handleExitCurrentRoom = () => {
+    if (!selectedRoomId) {
+      if (joinCode && joinCode.trim()) {
+        const match = rooms.find(
+          (r) => String(r.code) === String(joinCode.trim())
+        );
+        if (match) hideRoomForMe(match.id);
+        else
+          toast.error("No matching room found to exit.", {
+            duration: TOAST_DURATION.error,
+          });
+      }
+      return;
+    }
+
+    const room = rooms.find((r) => r.id === selectedRoomId);
+    const isOwner =
+      isAuthenticated && user?.email && room?.ownerId === user.email;
+
+    if (isOwner) {
+      // Owner: Just close the view
+      setSelectedRoomId(null);
+      try {
+        localStorage.removeItem(LAST_ROOM_KEY);
+      } catch (e) {}
+      try {
+        socket.emit("leave_room", { roomId: selectedRoomId });
+      } catch (e) {}
+    } else {
+      // Guest: Completely leave/hide the room
+      hideRoomForMe(selectedRoomId);
+    }
   };
 
   const SettingsMenu = ({ room }) => {
     const [open, setOpen] = useState(false);
     const [editing, setEditing] = useState(false);
     const [nameValue, setNameValue] = useState(room.name);
-
     if (!isAuthenticated || room.ownerId !== user?.email) return null;
-
     return (
       <div
         className="absolute top-1 right-1 z-10"
@@ -647,7 +837,6 @@ export default function Rooms() {
                 </button>
               </div>
             )}
-
             <button
               onClick={() => {
                 toggleAI(room.id);
@@ -657,24 +846,24 @@ export default function Rooms() {
             >
               🤖 {room.allowAI ? "Disable AI" : "Enable AI"}
             </button>
-
-            {/* Toast-based delete confirmation instead of window.confirm */}
             <button
               onClick={() => {
                 toast.custom(
                   (t) => (
                     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 shadow-xl text-xs max-w-xs">
+                      {" "}
                       <p className="mb-2 text-gray-800 dark:text-gray-100">
                         Delete room{" "}
                         <span className="font-semibold">"{room.name}"</span>?
-                      </p>
+                      </p>{" "}
                       <div className="flex justify-end gap-2">
+                        {" "}
                         <button
                           onClick={() => toast.dismiss(t.id)}
                           className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-200"
                         >
                           Cancel
-                        </button>
+                        </button>{" "}
                         <button
                           onClick={() => {
                             deleteRoom(room.id);
@@ -683,11 +872,11 @@ export default function Rooms() {
                           className="px-2 py-1 rounded bg-red-500 text-white"
                         >
                           Delete
-                        </button>
-                      </div>
+                        </button>{" "}
+                      </div>{" "}
                     </div>
                   ),
-                  { duration: 5000 }
+                  { duration: TOAST_DURATION.info * 2 }
                 );
               }}
               className="text-red-600 w-full text-left px-2 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
@@ -708,13 +897,11 @@ export default function Rooms() {
           localStorage.setItem(LAST_ROOM_KEY, room.id);
         } catch (e) {}
       }}
-      className={`relative p-3 rounded-xl cursor-pointer border transition-all flex flex-col justify-between shrink-0
-        w-full min-h-[80px]
-        ${
-          selectedRoomId === room.id
-            ? "bg-blue-600 text-white border-blue-600 shadow-md"
-            : "bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"
-        }`}
+      className={`relative p-3 rounded-xl cursor-pointer border transition-all flex flex-col justify-between shrink-0 w-full min-h-[80px] ${
+        selectedRoomId === room.id
+          ? "bg-blue-600 text-white border-blue-600 shadow-md"
+          : "bg-white dark:bg-gray-800 border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700"
+      }`}
     >
       <div className="pr-6">
         <h3
@@ -746,19 +933,17 @@ export default function Rooms() {
 
   return (
     <div className="h-[calc(100dvh-64px)] w-full flex flex-col md:flex-row gap-4 p-2 sm:p-4 max-w-7xl mx-auto overflow-hidden">
-      {/* LEFT COLUMN: Sidebar (Room List) */}
+      {/* LEFT COLUMN: Sidebar */}
       <div
         className={`shrink-0 w-full md:w-80 flex flex-col gap-3 h-full overflow-hidden ${
           selectedRoomId ? "hidden md:flex" : "flex"
         }`}
       >
-        {/* CREATE / JOIN BOX */}
         <div className="shrink-0 p-3 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900/50 flex flex-col gap-2">
           <div className="flex items-center justify-between">
             <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
               {isAuthenticated ? "New Room" : "Guest Join"}
             </h3>
-
             {!isAuthenticated && isGuest && (
               <button
                 type="button"
@@ -769,7 +954,6 @@ export default function Rooms() {
               </button>
             )}
           </div>
-
           {isAuthenticated && (
             <form className="flex gap-1" onSubmit={handleCreateRoom}>
               <input
@@ -786,8 +970,6 @@ export default function Rooms() {
               </button>
             </form>
           )}
-
-          {/* Guest name input block instead of window.prompt */}
           {!isAuthenticated && (
             <div className="flex gap-1">
               <input
@@ -798,9 +980,8 @@ export default function Rooms() {
               />
             </div>
           )}
-
           <div
-            className={`flex gap-1 ${
+            className={`flex gap-1 items-center ${
               isAuthenticated
                 ? "pt-2 border-t border-gray-200 dark:border-gray-700"
                 : ""
@@ -812,16 +993,16 @@ export default function Rooms() {
               placeholder="Enter Room Code"
               className="flex-1 min-w-0 px-2 py-1.5 text-xs rounded border border-gray-200 dark:border-gray-700 dark:bg-gray-800 outline-none"
             />
-            <button
-              onClick={() => handleJoinRoom(joinCode)}
-              className="text-green-600 text-xs font-bold px-1"
-            >
-              Join
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => handleJoinRoom(joinCode)}
+                className="text-green-600 text-xs font-bold px-2 py-1 rounded hover:bg-green-50 dark:hover:bg-green-900/20"
+              >
+                Join
+              </button>
+            </div>
           </div>
         </div>
-
-        {/* ROOM LIST - Scrolls internally */}
         <div className="flex-1 overflow-y-auto min-h-0 flex flex-col gap-2 pr-1 pb-1">
           {rooms.length === 0 && (
             <div className="shrink-0 w-full flex items-center justify-center p-4 text-xs text-gray-400 border border-gray-100 dark:border-gray-700 rounded-xl">
@@ -844,20 +1025,20 @@ export default function Rooms() {
       >
         {selectedRoom ? (
           <>
-            {/* Mobile header with Back + Exit */}
             <div className="md:hidden flex items-center justify-between gap-2 pb-2 border-b border-gray-200 dark:border-gray-700 mb-1">
-              <button
-                onClick={() => {
-                  try {
-                    localStorage.removeItem(LAST_ROOM_KEY);
-                  } catch (e) {}
-                  setSelectedRoomId(null);
-                }}
-                className="text-sm text-gray-500 dark:text-gray-300 flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-gray-800 px-2 py-1 rounded"
-              >
-                ← Back
-              </button>
-
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    try {
+                      localStorage.removeItem(LAST_ROOM_KEY);
+                    } catch (e) {}
+                    setSelectedRoomId(null);
+                  }}
+                  className="text-sm text-gray-500 dark:text-gray-300 flex items-center gap-1 hover:bg-gray-100 dark:hover:bg-gray-800 px-2 py-1 rounded"
+                >
+                  ← Back
+                </button>
+              </div>
               {!isAuthenticated && isGuest && (
                 <button
                   onClick={handleGuestExit}
@@ -868,9 +1049,30 @@ export default function Rooms() {
               )}
             </div>
 
-            {/* Card-like call container (responsive grid for video tiles) */}
+            {/* Desktop Exit Button - Changes based on ownership */}
+            <div className="hidden md:flex items-center justify-end gap-2 pb-0">
+              {isAuthenticated &&
+              user?.email &&
+              selectedRoom?.ownerId === user.email ? (
+                <button
+                  onClick={handleExitCurrentRoom}
+                  className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 px-2 py-1 rounded hover:bg-gray-100 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800"
+                  title="Close chat view"
+                >
+                  Close
+                </button>
+              ) : (
+                <button
+                  onClick={handleExitCurrentRoom}
+                  className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
+                  title="Completely exit & remove room"
+                >
+                  Leave Room
+                </button>
+              )}
+            </div>
+
             <div className="shrink-0 p-3 rounded-2xl bg-white dark:bg-gray-900 shadow-lg">
-              {/* Video tiles area: responsive grid; RoomCall will render an inline responsive view */}
               <div className="w-full">
                 <div className="rounded-xl overflow-hidden border border-gray-100 dark:border-gray-800">
                   <RoomCall
@@ -880,7 +1082,6 @@ export default function Rooms() {
                 </div>
               </div>
             </div>
-
             <div className="flex-1 min-h-0 relative">
               <RoomChat room={selectedRoom} displayName={currentDisplayName} />
             </div>

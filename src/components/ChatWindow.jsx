@@ -31,6 +31,7 @@ export default function ChatWindow({
   const longPressTimerRef = useRef(null);
 
   const messagesContainerRef = useRef(null);
+  const inputRef = useRef(null);
 
   const themeClass = useMemo(() => {
     switch (currentTheme) {
@@ -73,6 +74,13 @@ export default function ChatWindow({
     setInput("");
     setIsSending(true);
 
+    // Re-focus the textarea to keep the mobile keyboard open.
+    // Small timeout makes it more reliable across mobile browsers.
+    setTimeout(() => {
+      inputRef.current?.focus();
+    }, 80);
+
+    // Simulate AI reply (your existing behavior)
     setTimeout(() => {
       const fakeReplyText =
         mode === "prompt"
@@ -91,6 +99,11 @@ export default function ChatWindow({
 
       addMessage(aiMessage);
       setIsSending(false);
+
+      // Keep focus after AI reply as well
+      setTimeout(() => {
+        inputRef.current?.focus();
+      }, 50);
     }, 700);
   };
 
@@ -299,6 +312,7 @@ export default function ChatWindow({
 
         <div className="flex gap-2">
           <textarea
+            ref={inputRef}
             className="flex-1 resize-none rounded-lg border border-gray-300/40 dark:border-gray-600 bg-black/40 text-sm text-slate-100 px-3 py-2 outline-none focus:ring-2 focus:ring-blue-500/60 focus:border-blue-500 placeholder:text-gray-400"
             rows={1}
             placeholder="Talk to LC_Ai..."
@@ -306,8 +320,11 @@ export default function ChatWindow({
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
           />
+
           <button
             onClick={handleSend}
+            onMouseDown={(e) => e.preventDefault()} // prevents temporary blur on pointer down
+            onTouchStart={(e) => e.preventDefault()} // prevents temporary blur on touch
             disabled={isSending || !input.trim()}
             className="px-4 py-2 rounded-lg text-sm font-medium bg-blue-600 text-white disabled:bg-blue-400 disabled:cursor-not-allowed hover:bg-blue-700 transition-colors"
           >

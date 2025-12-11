@@ -85,27 +85,21 @@ export default function Login() {
     try {
       setLoading(true);
 
-      const res = await fetch(
-        "https://lc-ai-backend-a080.onrender.com/api/auth/login",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, password }),
-        }
-      );
+      const res = await fetch(`${BACKEND}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
 
-      // Try to parse JSON safely, but fall back to text if not JSON
-      const text = await res.text(); // read raw body first
+      const text = await res.text();
       let data = null;
       try {
         data = text ? JSON.parse(text) : null;
       } catch (parseErr) {
-        // Not JSON (likely HTML error page or plain text)
         console.warn("Non-JSON response from /api/auth/login:", text);
       }
 
       if (!res.ok) {
-        // Prefer a JSON error message if available, otherwise show the raw text (trimmed)
         const message =
           (data && (data.error || data.message)) ||
           (text ? text.substring(0, 100) : "Invalid response from server");
@@ -113,7 +107,6 @@ export default function Login() {
         return setErrorToast(message);
       }
 
-      // res.ok and parsed JSON expected in `data`
       if (!data) {
         setLoading(false);
         return setErrorToast("Server returned an unexpected response.");
@@ -137,22 +130,17 @@ export default function Login() {
     try {
       setLoading(true);
 
-      // Fetch Google Profile
       const res = await fetch("https://www.googleapis.com/oauth2/v3/userinfo", {
         headers: { Authorization: `Bearer ${tokenResponse.access_token}` },
       });
 
       const profile = await res.json();
 
-      // Send to backend for login/signup
-      const backendRes = await fetch(
-        "https://lc-ai-backend-a080.onrender.com/api/auth/google",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(profile),
-        }
-      );
+      const backendRes = await fetch(`${BACKEND}/api/auth/google`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(profile),
+      });
 
       const data = await backendRes.json();
 
@@ -175,7 +163,32 @@ export default function Login() {
     }
   };
 
-  // ---------------- Password Reset Handlers ----------------
+  // use your Vite env or fallback to localhost
+  const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
+
+  async function doFetchWithTimeout(url, opts = {}, timeout = 12000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    opts.signal = controller.signal;
+
+    try {
+      const res = await fetch(url, opts);
+      const text = await res.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch (err) {
+        data = { _rawText: text };
+      }
+      return { res, data, text };
+    } catch (err) {
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // ---------------- Password Reset Handlers (REPLACED) ----------------
 
   // Step 1: request reset (sends email with token/link)
   const handleRequestReset = async (e) => {
@@ -184,45 +197,66 @@ export default function Login() {
     const targetEmail = (resetEmail || email).trim();
     if (!targetEmail) return setErrorToast("Please enter your email to reset.");
 
+    setResetLoading(true);
     try {
-      setResetLoading(true);
+      const url = `${BACKEND}/api/auth/password-reset/request`;
+      console.log("➡️ [REQUEST RESET] url:", url, "email:", targetEmail);
 
-      const res = await fetch(
-        "https://lc-ai-backend-a080.onrender.com/api/auth/password-reset/request",
+      const { res, data, text } = await doFetchWithTimeout(
+        url,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email: targetEmail }),
-        }
+        },
+        12000 // 12s timeout
       );
 
-      const text = await res.text();
-      let data = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch (err) {}
+      console.log(
+        "⬅️ [REQUEST RESET] status:",
+        res.status,
+        "body:",
+        data || text
+      );
 
       if (!res.ok) {
         const message =
           (data && (data.error || data.message)) ||
           (text ? text.substring(0, 200) : "Failed to request password reset");
-        setResetLoading(false);
         return setErrorToast(message);
       }
 
       // success: move to confirm step
       setResetEmail(targetEmail);
       setResetStep(2);
-      addToast(
-        data?.message || "Reset email sent — check your inbox",
-        "success",
-        SUCCESS_TOAST_LIFETIME
-      );
-      setResetLoading(false);
+
+      // If server returned a dev token (email failed), show it and auto-fill token for convenience
+      if (data?.devResetToken) {
+        addToast(
+          "Email delivery failed — using dev token (visible in console)",
+          "warning",
+          4000
+        );
+        console.log("DEV RESET TOKEN:", data.devResetToken);
+        setResetToken(data.devResetToken);
+        // keep resetStep as 2 so user can paste or auto-use token
+      } else {
+        addToast(
+          data?.message || "Reset email sent — check your inbox",
+          "success",
+          SUCCESS_TOAST_LIFETIME
+        );
+      }
     } catch (err) {
-      console.error("Request reset error:", err);
-      setResetLoading(false);
-      setErrorToast("Failed to request password reset. Try again.");
+      if (err.name === "AbortError") {
+        console.error("Request reset aborted (timeout).");
+        setErrorToast("Request timed out — try again.");
+      } else {
+        console.error("Request reset error:", err);
+        setErrorToast("Failed to request password reset. Try again.");
+      }
+    } finally {
+      setResetLoading(false); // ALWAYS clear spinner
     }
   };
 
@@ -235,11 +269,13 @@ export default function Login() {
       return setErrorToast("Please fill email, token and new password.");
     }
 
+    setResetLoading(true);
     try {
-      setResetLoading(true);
+      const url = `${BACKEND}/api/auth/password-reset/confirm`;
+      console.log("➡️ [CONFIRM RESET] url:", url, "email:", resetEmail);
 
-      const res = await fetch(
-        "https://lc-ai-backend-a080.onrender.com/api/auth/password-reset/confirm",
+      const { res, data, text } = await doFetchWithTimeout(
+        url,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -248,20 +284,21 @@ export default function Login() {
             token: resetToken,
             newPassword: resetNewPassword,
           }),
-        }
+        },
+        12000
       );
 
-      const text = await res.text();
-      let data = null;
-      try {
-        data = text ? JSON.parse(text) : null;
-      } catch (err) {}
+      console.log(
+        "⬅️ [CONFIRM RESET] status:",
+        res.status,
+        "body:",
+        data || text
+      );
 
       if (!res.ok) {
         const message =
           (data && (data.error || data.message)) ||
           (text ? text.substring(0, 200) : "Failed to reset password");
-        setResetLoading(false);
         return setErrorToast(message);
       }
 
@@ -286,15 +323,20 @@ export default function Login() {
         SUCCESS_TOAST_LIFETIME
       );
       // close reset UI
-      setResetLoading(false);
       setResetOpen(false);
       setResetStep(1);
       setResetToken("");
       setResetNewPassword("");
     } catch (err) {
-      console.error("Confirm reset error:", err);
-      setResetLoading(false);
-      setErrorToast("Failed to reset password. Try again.");
+      if (err.name === "AbortError") {
+        console.error("Confirm reset aborted (timeout).");
+        setErrorToast("Request timed out — try again.");
+      } else {
+        console.error("Confirm reset error:", err);
+        setErrorToast("Failed to reset password. Try again.");
+      }
+    } finally {
+      setResetLoading(false); // ALWAYS clear spinner
     }
   };
 
@@ -319,8 +361,7 @@ export default function Login() {
     <>
       {/* Outer centered viewport container — prevents page-level clipping */}
       <div className="min-h-screen w-full flex items-center justify-center px-2 py-4 bg-transparent">
-        {/* Card wrapper: constrained to viewport height; this ensures no page clipping.
-            On very short screens we gently scale down so everything fits. */}
+        {/* Card wrapper */}
         <div
           className="login-card-wrapper w-full max-w-md rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 sm:p-5 shadow-md"
           style={{ maxHeight: "96vh" }}
@@ -403,7 +444,7 @@ export default function Login() {
             <GoogleSignInButton onSuccess={handleGoogleSuccess} />
           </div>
 
-          {/* Responsive & compact Password Reset Panel */}
+          {/* Password Reset Panel */}
           {!resetOpen ? null : (
             <div className="mt-2 w-full">
               <div className="w-full max-w-full bg-white/80 dark:bg-gray-900 border rounded p-3 sm:p-4">
@@ -429,7 +470,7 @@ export default function Login() {
                         className="flex-1 px-3 py-2 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:bg-amber-300 flex items-center justify-center"
                       >
                         {resetLoading && <Spinner size={14} />}
-                        {resetLoading ? "Sending..." : "Send reset email"}
+                        {resetLoading ? "Sending..." : "Send reset otp"}
                       </button>
 
                       <button
@@ -437,14 +478,14 @@ export default function Login() {
                         onClick={() => setResetStep(2)}
                         className="px-3 py-2 text-sm rounded-lg border w-full sm:w-auto"
                       >
-                        I have token
+                        I have otp
                       </button>
                     </div>
                   </form>
                 ) : (
                   <form onSubmit={handleConfirmReset} className="space-y-2">
                     <p className="text-sm text-slate-600 dark:text-slate-300 mb-2">
-                      Enter the token you received and a new password.
+                      Enter the otp you received and a new password.
                     </p>
 
                     <input
@@ -462,7 +503,7 @@ export default function Login() {
                       className="w-full px-3 py-2 text-sm rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-800"
                       value={resetToken}
                       onChange={(e) => setResetToken(e.target.value)}
-                      placeholder="Reset token"
+                      placeholder="Reset Otp"
                     />
 
                     <input
@@ -520,7 +561,6 @@ export default function Login() {
 
       {/* responsive shrink + small-height scaling to guarantee fit on tiny viewports */}
       <style>{`
-        /* general small-screen tweaks (reduces spacing) */
         @media (max-width: 420px) {
           .login-card-wrapper { padding: 10px !important; border-radius: 10px !important; }
           .login-card-wrapper .title { font-size: 15px !important; margin-bottom: 8px !important; }
@@ -530,30 +570,17 @@ export default function Login() {
           .login-card-wrapper .my-3 { margin-top: 8px !important; margin-bottom: 8px !important; }
         }
 
-        /* gentle scale-down when viewport height is small (keeps all content visible) */
         @media (max-height: 700px) {
-          .login-card-wrapper {
-            transform: scale(0.96);
-            transform-origin: top center;
-          }
+          .login-card-wrapper { transform: scale(0.96); transform-origin: top center; }
         }
         @media (max-height: 660px) {
-          .login-card-wrapper {
-            transform: scale(0.92);
-            transform-origin: top center;
-          }
+          .login-card-wrapper { transform: scale(0.92); transform-origin: top center; }
         }
         @media (max-height: 620px) {
-          .login-card-wrapper {
-            transform: scale(0.88);
-            transform-origin: top center;
-          }
+          .login-card-wrapper { transform: scale(0.88); transform-origin: top center; }
         }
         @media (max-height: 580px) {
-          .login-card-wrapper {
-            transform: scale(0.84);
-            transform-origin: top center;
-          }
+          .login-card-wrapper { transform: scale(0.84); transform-origin: top center; }
         }
 
         @keyframes toastIn {

@@ -1,4 +1,5 @@
 // src/pages/Rooms.jsx
+import { createPortal } from "react-dom";
 import { useEffect, useState, useRef } from "react";
 import RoomChat from "../components/RoomChat";
 import RoomCall from "../components/RoomCall";
@@ -55,14 +56,15 @@ export default function Rooms() {
   const [newRoomAI, setNewRoomAI] = useState(true);
   const [joinCode, setJoinCode] = useState("");
 
+  // ensure pendingRoomCode state exists (was missing in error)
+  const [pendingRoomCode, setPendingRoomCode] = useState(null);
+
   const [isGuest, setIsGuest] = useState(() => {
     return !!localStorage.getItem(GUEST_ID_KEY);
   });
   const [guestName, setGuestName] = useState(() => {
     return localStorage.getItem(GUEST_NAME_KEY) || "";
   });
-
-  const [pendingRoomCode, setPendingRoomCode] = useState(null);
 
   // Refs to handle mutable data inside listeners without re-triggering effects
   const createToastIdRef = useRef(null);
@@ -308,27 +310,37 @@ export default function Rooms() {
         return withPresence;
       });
 
+      // --- Robust handling of pending room creation (clear toast once) ---
       if (pendingRoomCodeRef.current) {
-        const codeToFind = pendingRoomCodeRef.current;
-        const byCode = normalized.find(
-          (r) => String(r.code) === String(codeToFind)
-        );
+        const codeToFind = String(pendingRoomCodeRef.current);
+        const byCode = normalized.find((r) => String(r.code) === codeToFind);
+
         if (byCode) {
           setTimeout(() => {
             try {
               localStorage.setItem(LAST_ROOM_KEY, byCode.id);
             } catch (e) {}
+
+            // Dismiss earlier "Creating room..." toast if we have an id
             if (createToastIdRef.current) {
-              toast.dismiss(createToastIdRef.current);
+              try {
+                toast.dismiss(createToastIdRef.current);
+              } catch (e) {}
               createToastIdRef.current = null;
             }
+
             toast.success(`Room "${byCode.name}" created 🎉`, {
               duration: TOAST_DURATION.success,
             });
+
+            // clear pending
             setPendingRoomCode(null);
             pendingRoomCodeRef.current = null;
+
+            // select new room
             setSelectedRoomId(byCode.id);
           }, 0);
+
           return;
         }
       }
@@ -388,7 +400,9 @@ export default function Rooms() {
     const handleRoomCreateFailed = (payload) => {
       const msg = payload?.message || "Failed to create room.";
       if (createToastIdRef.current) {
-        toast.dismiss(createToastIdRef.current);
+        try {
+          toast.dismiss(createToastIdRef.current);
+        } catch (e) {}
         createToastIdRef.current = null;
       }
       setPendingRoomCode(null);
@@ -529,9 +543,12 @@ export default function Rooms() {
     const toastId = `create-room-${Date.now()}`;
     createToastIdRef.current = toastId;
     toast.loading("Creating room...", { id: toastId });
-    socket.emit("create_room", newRoomPayload);
+
+    // IMPORTANT: set both state and ref so handlers find the pending code
     setPendingRoomCode(code);
     pendingRoomCodeRef.current = code;
+
+    socket.emit("create_room", newRoomPayload);
     setNewRoomName("");
   };
 
@@ -588,11 +605,13 @@ export default function Rooms() {
             user?.token || user?.accessToken || user?.authToken || user?.jwt;
           const headers = {};
           if (token) headers["Authorization"] = `Bearer ${token}`;
+
           const body = {
             code: trimmed,
             userId: user._id || user.id,
             userName: user.name,
           };
+
           const result = await tryPostToJoinEndpoints(body, headers);
           if (!result.ok) {
             toast.error("Failed to join room.", {
@@ -600,8 +619,18 @@ export default function Rooms() {
             });
             return;
           }
+
           const joinedRoom = result.data || serverRoom;
           const normalized = normalizeRoom(joinedRoom);
+
+          if (!normalized) {
+            toast.error("Failed to join room (invalid server response).", {
+              duration: TOAST_DURATION.error,
+            });
+            return;
+          }
+
+          // keep local visibility and storage (your existing behavior)
           unhideRoomForMe(normalized.id);
           setRooms((prev) => {
             const filtered = prev.filter((r) => r.id !== normalized.id);
@@ -615,13 +644,36 @@ export default function Rooms() {
             }
             return next;
           });
+
           setSelectedRoomId(normalized.id);
           try {
             localStorage.setItem(LAST_ROOM_KEY, normalized.id);
           } catch (e) {}
+
+          // --- NEW: notify socket server so this socket is associated with the user
+          // and actually joins the room for presence/messages. This prevents the server
+          // from later filtering the room out of the client's room list.
           try {
+            // 1) Ensure socket has user data (so server's filterRoomsForSocket can match)
+            socket.emit("register_user", {
+              userId: user._id || user.id,
+              email: user.email,
+            });
+
+            // 2) Ask the socket server to join the room (uses server join_room flow for presence)
+            //    server expects the roomId (object id string) — not the numeric code.
+            socket.emit("join_room", {
+              roomId: normalized.id,
+              displayName: user.name || null,
+            });
+
+            // 3) Ask server to refresh/send room list for this socket immediately
             socket.emit("request_room_list");
-          } catch (e) {}
+          } catch (sockErr) {
+            // not fatal — local state is already updated, but server may not reflect it until later
+            console.warn("Socket notifications after join failed:", sockErr);
+          }
+
           toast.success(`Joined room "${normalized.name}" ✅`, {
             duration: TOAST_DURATION.success,
           });
@@ -631,6 +683,7 @@ export default function Rooms() {
           });
         }
       } else {
+        // unchanged guest branch
         const existingName = guestName && guestName.trim();
         const cleanName = existingName;
         if (!cleanName) {
@@ -755,9 +808,6 @@ export default function Rooms() {
   };
 
   // Exit the **currently selected room**
-  // FIXED: Logic Branching
-  // - Guest -> Completely Leave (Remove from list)
-  // - Owner -> Close View (Keep in list)
   const handleExitCurrentRoom = () => {
     if (!selectedRoomId) {
       if (joinCode && joinCode.trim()) {
@@ -792,110 +842,213 @@ export default function Rooms() {
     }
   };
 
+  /* ---------- Replace existing SettingsMenu with this ---------- */
+
+  /* ---------- DROP-IN REPLACEMENT SettingsMenu ---------- */
   const SettingsMenu = ({ room }) => {
     const [open, setOpen] = useState(false);
     const [editing, setEditing] = useState(false);
     const [nameValue, setNameValue] = useState(room.name);
+    const [confirmOpen, setConfirmOpen] = useState(false);
 
-    if (!isAuthenticated || room.ownerId !== user?.email) return null;
+    const btnRef = useRef(null);
+    const panelRef = useRef(null);
+    const [pos, setPos] = useState(null); // { top, left }
 
-    return (
+    const isOwner =
+      isAuthenticated &&
+      (room.ownerId === user?.email ||
+        String(room.ownerId) === String(user?._id || user?.id));
+
+    if (!isOwner) return null;
+
+    useEffect(() => {
+      if (!open) {
+        setPos(null);
+        return;
+      }
+      const btn = btnRef.current;
+      if (!btn) return;
+      const rect = btn.getBoundingClientRect();
+
+      // Align panel's right edge with button's right edge by default
+      const panelWidth = 240;
+      const left = rect.right - panelWidth;
+      const top = rect.bottom + 8;
+
+      // clamp to viewport
+      const finalLeft = Math.max(
+        8,
+        Math.min(left, window.innerWidth - panelWidth - 8)
+      );
+      const finalTop = Math.max(8, Math.min(top, window.innerHeight - 120));
+
+      setPos({ left: finalLeft, top: finalTop });
+
+      const onDocClick = (e) => {
+        if (panelRef.current && panelRef.current.contains(e.target)) return;
+        if (btnRef.current && btnRef.current.contains(e.target)) return;
+        setOpen(false);
+        setConfirmOpen(false);
+        setEditing(false);
+      };
+      const onKey = (e) => {
+        if (e.key === "Escape") {
+          setOpen(false);
+          setConfirmOpen(false);
+          setEditing(false);
+        }
+      };
+
+      window.addEventListener("mousedown", onDocClick);
+      window.addEventListener("touchstart", onDocClick);
+      window.addEventListener("keydown", onKey);
+      return () => {
+        window.removeEventListener("mousedown", onDocClick);
+        window.removeEventListener("touchstart", onDocClick);
+        window.removeEventListener("keydown", onKey);
+      };
+    }, [open]);
+
+    const stop = (e) => e?.stopPropagation?.();
+
+    const panel = (
       <div
-        className="absolute top-1 right-1 z-10"
-        onClick={(e) => e.stopPropagation()}
+        ref={panelRef}
+        onClick={stop}
+        className="rounded-lg shadow-2xl text-xs space-y-2"
+        style={{
+          position: "fixed",
+          left: pos?.left ?? 0,
+          top: pos?.top ?? 0,
+          width: 240,
+          zIndex: 99999,
+        }}
       >
-        <button
-          onClick={() => setOpen((v) => !v)}
-          className={`p-1.5 rounded-full transition ${
-            selectedRoomId === room.id
-              ? "text-blue-100 hover:bg-blue-500"
-              : "text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-600"
-          }`}
-        >
-          ⚙️
-        </button>
-        {open && (
-          <div className="absolute top-8 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg w-40 p-1.5 z-20 shadow-xl text-xs space-y-1 text-gray-800 dark:text-gray-200">
-            {/* Added text-gray-800 above to fix visibility in light mode */}
-
-            {!editing ? (
+        {/* Outer box respects dark mode */}
+        <div className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2">
+          {/* Rename / Edit */}
+          {!editing ? (
+            <button
+              onClick={() => {
+                setEditing(true);
+                setConfirmOpen(false);
+                setNameValue(room.name);
+              }}
+              className="w-full text-left px-2 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 rounded flex items-center gap-2"
+            >
+              <span className="text-lg leading-none">✏️</span>
+              <span className="ml-1">Rename</span>
+            </button>
+          ) : (
+            <div className="flex gap-2 items-center p-1">
+              <input
+                className="flex-1 px-2 py-1 rounded border border-gray-200 dark:border-gray-600 bg-white dark:bg-gray-700 text-sm text-gray-900 dark:text-gray-100 outline-none"
+                value={nameValue}
+                onChange={(e) => setNameValue(e.target.value)}
+                onClick={(e) => e.stopPropagation()}
+              />
               <button
-                onClick={() => setEditing(true)}
-                className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+                onClick={() => {
+                  const trimmed = nameValue.trim();
+                  if (trimmed) renameRoom(room.id, trimmed);
+                  setEditing(false);
+                  setOpen(false);
+                }}
+                className="text-green-600 font-semibold px-2"
               >
-                ✏️ Rename
+                ✓
               </button>
-            ) : (
-              <div className="flex gap-1 p-1">
-                <input
-                  className="w-full px-1 py-0.5 rounded border bg-white dark:bg-gray-700 text-[10px] text-gray-900 dark:text-white"
-                  value={nameValue}
-                  onChange={(e) => setNameValue(e.target.value)}
-                  onClick={(e) => e.stopPropagation()}
-                />
-                <button
-                  onClick={() => {
-                    const trimmed = nameValue.trim();
-                    if (trimmed) renameRoom(room.id, trimmed);
-                    setEditing(false);
-                    setOpen(false);
-                  }}
-                  className="text-green-600 font-bold"
-                >
-                  ✓
-                </button>
+            </div>
+          )}
+
+          {/* Toggle AI */}
+          <button
+            onClick={() => {
+              toggleAI(room.id);
+              setOpen(false);
+            }}
+            className="w-full text-left px-2 py-2 hover:bg-gray-50 dark:hover:bg-gray-700 rounded flex items-center gap-2"
+          >
+            <span className="text-lg leading-none">🤖</span>
+            <span className="ml-1">
+              {room.allowAI ? "Disable AI" : "Enable AI"}
+            </span>
+          </button>
+
+          {/* Delete */}
+          <div className="mt-1">
+            <button
+              onClick={() => setConfirmOpen(true)}
+              className="w-full text-left px-2 py-2 hover:bg-red-50 dark:hover:bg-red-900/20 rounded text-red-600 flex items-center gap-2"
+            >
+              <span className="text-lg leading-none">🗑</span>
+              <span className="ml-1">Delete</span>
+            </button>
+
+            {confirmOpen && (
+              <div className="mt-2 border rounded p-3 text-sm bg-white dark:bg-gray-900 border-gray-100 dark:border-gray-800 shadow-sm">
+                <p className="mb-2 text-gray-800 dark:text-gray-100">
+                  Delete room{" "}
+                  <span className="font-semibold">"{room.name}"</span>?
+                </p>
+                <div className="flex justify-end gap-2">
+                  <button
+                    onClick={() => {
+                      setConfirmOpen(false);
+                      setOpen(false);
+                    }}
+                    className="px-3 py-1 rounded border border-gray-300 dark:border-gray-700 text-sm text-gray-700 dark:text-gray-200"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={() => {
+                      // close immediately then run delete
+                      setConfirmOpen(false);
+                      setOpen(false);
+                      deleteRoom(room.id);
+                    }}
+                    className="px-3 py-1 rounded bg-red-500 text-white text-sm"
+                  >
+                    Delete
+                  </button>
+                </div>
               </div>
             )}
-            <button
-              onClick={() => {
-                toggleAI(room.id);
-                setOpen(false);
-              }}
-              className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
-            >
-              🤖 {room.allowAI ? "Disable AI" : "Enable AI"}
-            </button>
-            <button
-              onClick={() => {
-                // Close the menu immediately so it doesn't stay open while toast is showing
-                setOpen(false);
-
-                toast.custom(
-                  (t) => (
-                    <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 shadow-xl text-xs max-w-xs">
-                      <p className="mb-2 text-gray-800 dark:text-gray-100">
-                        Delete room{" "}
-                        <span className="font-semibold">"{room.name}"</span>?
-                      </p>
-                      <div className="flex justify-end gap-2">
-                        <button
-                          onClick={() => toast.dismiss(t.id)}
-                          className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-200"
-                        >
-                          Cancel
-                        </button>
-                        <button
-                          onClick={() => {
-                            toast.dismiss(t.id); // <--- FIX: Dismiss toast immediately first
-                            deleteRoom(room.id); // Then run the delete logic
-                          }}
-                          className="px-2 py-1 rounded bg-red-500 text-white"
-                        >
-                          Delete
-                        </button>
-                      </div>
-                    </div>
-                  ),
-                  { duration: TOAST_DURATION.info * 2 }
-                );
-              }}
-              className="text-red-600 w-full text-left px-2 py-1.5 hover:bg-red-50 dark:hover:bg-red-900/20 rounded"
-            >
-              🗑 Delete
-            </button>
           </div>
-        )}
+        </div>
       </div>
+    );
+
+    return (
+      <>
+        <div
+          className="absolute top-1 right-1"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <button
+            ref={btnRef}
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen((v) => !v);
+              setConfirmOpen(false);
+              setEditing(false);
+              setNameValue(room.name);
+            }}
+            className={`p-1.5 rounded-full transition ${
+              selectedRoomId === room.id
+                ? "text-blue-100 hover:bg-blue-500"
+                : "text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-600"
+            }`}
+            aria-label="Room settings"
+          >
+            ⚙️
+          </button>
+        </div>
+
+        {open && pos ? createPortal(panel, document.body) : null}
+      </>
     );
   };
 

@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link, Outlet } from "react-router-dom";
 import { useTheme } from "../context/ThemeContext";
 import { useAuth } from "../context/AuthContext";
+import { toast } from "react-hot-toast";
 
 export default function MainLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -229,7 +230,12 @@ export default function MainLayout() {
               <div className="flex flex-col">
                 <span className="text-sm font-semibold">{user.name}</span>
                 <button
-                  onClick={logout}
+                  onClick={() => {
+                    toast.success("Logged out successfully!", {
+                      duration: 1500,
+                    });
+                    logout();
+                  }}
                   className="text-xs text-red-500 hover:underline"
                 >
                   Logout

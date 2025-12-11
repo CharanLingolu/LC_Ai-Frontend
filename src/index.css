@@ -65,14 +65,14 @@ body,
     #c6128d 40%,
     #b01885 80%
   );
-  --chat-text: #2e0340;
+  --chat-text: #fff2fb;
   --chat-input-bg: rgba(0, 0, 0, 0.06);
 }
 
 .chat-theme-midnight {
   --chat-bg: radial-gradient(
     circle at top,
-    #1f2937 0%,
+    #374456 0%,
     #020617 70%,
     #000000 100%
   );
@@ -82,7 +82,7 @@ body,
 
 .chat-theme-sunset {
   --chat-bg: linear-gradient(135deg, #f65359, #b9551c, #a92082, #7749e1);
-  --chat-text: #1f2933;
+  --chat-text: #fffae6;
   --chat-input-bg: rgba(255, 255, 255, 0.06);
 }
 

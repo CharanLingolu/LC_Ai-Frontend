@@ -13,8 +13,16 @@ body,
 
 /* Any chat container that wants themes should use this + a chat-theme-* class */
 .chat-themable-container {
-  background: var(--chat-bg, #0f172a);
-  color: var(--chat-text, #e5e7eb);
+  /* Primary variables used by themes:
+     --chat-bg  : chat background
+     --chat-text: main chat text color
+     --chat-input-bg: background used for the input area (defaults dark)
+  */
+  --chat-bg: #0f172a;
+  --chat-text: #e5e7eb;
+  --chat-input-bg: rgba(0, 0, 0, 0.14);
+  background: var(--chat-bg);
+  color: var(--chat-text);
   position: relative;
 }
 
@@ -23,14 +31,17 @@ body,
   background: transparent;
 }
 
+/* Use the chat input bg variable for consistent input area color */
 .room-chat-container .chat-input-area {
   backdrop-filter: blur(6px);
+  background: var(--chat-input-bg);
 }
 
 /* Make sure inputs are readable on dark gradients (like love/sunset) */
 .chat-input-area input,
 .chat-input-area textarea {
-  color: #e5e7eb;
+  color: var(--chat-text);
+  background: transparent;
 }
 
 /* ---------- Chat Themes ---------- */
@@ -43,6 +54,8 @@ body,
     #020617 100%
   );
   --chat-text: #e5e7eb;
+  /* default dark input area for the default theme */
+  --chat-input-bg: rgba(0, 6, 14, 0.32);
 }
 
 .chat-theme-love {
@@ -53,6 +66,7 @@ body,
     #b01885 80%
   );
   --chat-text: #2e0340;
+  --chat-input-bg: rgba(0, 0, 0, 0.06);
 }
 
 .chat-theme-midnight {
@@ -63,11 +77,13 @@ body,
     #000000 100%
   );
   --chat-text: #e5e7eb;
+  --chat-input-bg: rgba(0, 0, 0, 0.28);
 }
 
 .chat-theme-sunset {
   --chat-bg: linear-gradient(135deg, #f65359, #b9551c, #a92082, #7749e1);
   --chat-text: #1f2933;
+  --chat-input-bg: rgba(255, 255, 255, 0.06);
 }
 
 /* Love theme hearts overlay */
@@ -106,4 +122,118 @@ body,
 .glow-text-sunset {
   text-shadow: 0 0 4px rgba(255, 255, 255, 0.9),
     0 0 10px rgba(255, 210, 150, 0.95);
+}
+
+/* ---------- Light-mode (scoped) overrides for default chat theme ----------
+   Replace your existing light mode section with this block.
+------------------------------------------------------------------------- */
+
+.chat-theme-default.light {
+  --chat-bg: #f8fafc; /* Very light slate white */
+  --chat-text: #0f172a; /* Slate 900 (Deep dark blue/black) */
+  --chat-input-bg: #ffffff;
+}
+
+/* 1. FORCE CONTAINER BACKGROUND & TEXT COLOR */
+.chat-theme-default.light.chat-themable-container {
+  background: var(--chat-bg) !important;
+  color: var(--chat-text) !important;
+}
+
+/* 2. FIX INVISIBLE TEXT (Timestamps, Sender Names, Meta)
+   We force all common "light text" classes to become dark gray/black in light mode. */
+.chat-theme-default.light .text-slate-100,
+.chat-theme-default.light .text-slate-200,
+.chat-theme-default.light .text-slate-300,
+.chat-theme-default.light .text-slate-400,
+.chat-theme-default.light .text-slate-500,
+.chat-theme-default.light .text-gray-100,
+.chat-theme-default.light .text-gray-200,
+.chat-theme-default.light .text-gray-300,
+.chat-theme-default.light .text-gray-400,
+.chat-theme-default.light .text-white,
+.chat-theme-default.light .text-white\/40,
+.chat-theme-default.light .text-white\/60,
+.chat-theme-default.light .text-white\/80 {
+  color: #334155 !important; /* Slate 700 - Readable dark gray */
+}
+
+/* Specific fix for tiny timestamps/labels to make them darker */
+.chat-theme-default.light .text-xs,
+.chat-theme-default.light .text-sm,
+.chat-theme-default.light .text-\[10px\],
+.chat-theme-default.light .sender-label,
+.chat-theme-default.light .message-time {
+  color: #475569 !important; /* Slate 600 - slightly lighter but visible */
+  font-weight: 600;
+}
+
+/* 3. FIX SETTINGS PANEL & DROPDOWNS
+   If your dropdowns are hardcoded to bg-slate-800 or bg-black, this flips them to white 
+   with a shadow so they pop against the background. */
+.chat-theme-default.light .bg-slate-800,
+.chat-theme-default.light .bg-gray-800,
+.chat-theme-default.light .bg-zinc-900,
+.chat-theme-default.light .bg-black {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border: 1px solid #e2e8f0 !important; /* Light gray border */
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+    0 2px 4px -1px rgba(0, 0, 0, 0.06) !important;
+}
+
+/* Fix hover states in dropdowns */
+.chat-theme-default.light .hover\:bg-slate-700:hover,
+.chat-theme-default.light .hover\:bg-gray-700:hover {
+  background-color: #f1f5f9 !important; /* Light gray hover */
+  color: #000000 !important;
+}
+
+/* 4. FIX HEADER BUTTONS (Default, Love, Clear) */
+
+/* General Buttons: Give them a light gray background and dark text */
+.chat-theme-default.light button.bg-white\/20,
+.chat-theme-default.light div.bg-white\/20 {
+  background-color: #e2e8f0 !important; /* Slate 200 */
+  color: #0f172a !important;
+}
+
+/* Clear Button Specifics - Change pale red to dark red */
+.chat-theme-default.light .text-red-300,
+.chat-theme-default.light .text-red-400 {
+  color: #dc2626 !important; /* Red 600 */
+}
+.chat-theme-default.light .border-red-300,
+.chat-theme-default.light .border-red-400 {
+  border-color: #dc2626 !important;
+}
+.chat-theme-default.light .hover\:bg-red-500\/20:hover {
+  background-color: rgba(220, 38, 38, 0.1) !important;
+}
+
+/* 5. FIX INPUT AREA */
+.chat-theme-default.light .chat-input-area {
+  background: #ffffff !important;
+  border-top: 1px solid #e2e8f0;
+  box-shadow: 0 -1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.chat-theme-default.light .chat-input-area input,
+.chat-theme-default.light .chat-input-area textarea {
+  color: #0f172a !important;
+  background: transparent !important;
+}
+
+.chat-theme-default.light .chat-input-area input::placeholder,
+.chat-theme-default.light .chat-input-area textarea::placeholder {
+  color: #94a3b8 !important; /* Slate 400 placeholder */
+}
+
+/* 6. PRESERVE COLORED BUBBLES
+   Ensure the actual chat bubbles (Blue/Purple) keep white text */
+.chat-theme-default.light .bg-blue-600 .text-white,
+.chat-theme-default.light .bg-blue-500 .text-white,
+.chat-theme-default.light .bg-purple-600 .text-white,
+.chat-theme-default.light .bg-emerald-600 .text-white {
+  color: #ffffff !important;
 }

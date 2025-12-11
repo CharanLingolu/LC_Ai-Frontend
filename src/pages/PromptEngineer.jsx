@@ -8,6 +8,12 @@ export default function PromptEngineer() {
   const [result, setResult] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // New function to clear text
+  const handleClear = () => {
+    setInput("");
+    setResult("");
+  };
+
   const handleGenerate = async (e) => {
     e.preventDefault();
     const text = input.trim();
@@ -53,13 +59,27 @@ export default function PromptEngineer() {
           value={input}
           onChange={(e) => setInput(e.target.value)}
         />
-        <button
-          type="submit"
-          disabled={loading}
-          className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-blue-400"
-        >
-          {loading ? "Generating..." : "Generate Prompt"}
-        </button>
+
+        {/* Buttons Row */}
+        <div className="flex gap-2">
+          <button
+            type="submit"
+            disabled={loading}
+            className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-blue-400"
+          >
+            {loading ? "Generating..." : "Generate Prompt"}
+          </button>
+
+          {/* New Clear Button */}
+          <button
+            type="button"
+            onClick={handleClear}
+            disabled={loading || (!input && !result)}
+            className="px-4 py-2 rounded-lg bg-gray-200 text-gray-700 dark:bg-gray-700 dark:text-gray-200 text-sm font-medium hover:bg-gray-300 dark:hover:bg-gray-600 disabled:opacity-50"
+          >
+            Clear
+          </button>
+        </div>
       </form>
 
       {/* Result Area - Flex-1 to take remaining space + Scrollable */}

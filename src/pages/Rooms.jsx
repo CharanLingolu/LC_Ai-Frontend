@@ -796,7 +796,9 @@ export default function Rooms() {
     const [open, setOpen] = useState(false);
     const [editing, setEditing] = useState(false);
     const [nameValue, setNameValue] = useState(room.name);
+
     if (!isAuthenticated || room.ownerId !== user?.email) return null;
+
     return (
       <div
         className="absolute top-1 right-1 z-10"
@@ -804,25 +806,32 @@ export default function Rooms() {
       >
         <button
           onClick={() => setOpen((v) => !v)}
-          className="p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-500 transition"
+          className={`p-1.5 rounded-full transition ${
+            selectedRoomId === room.id
+              ? "text-blue-100 hover:bg-blue-500"
+              : "text-gray-500 hover:bg-gray-200 dark:hover:bg-gray-600"
+          }`}
         >
           ⚙️
         </button>
         {open && (
-          <div className="absolute top-8 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg w-40 p-1.5 z-20 shadow-xl text-xs space-y-1">
+          <div className="absolute top-8 right-0 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-600 rounded-lg w-40 p-1.5 z-20 shadow-xl text-xs space-y-1 text-gray-800 dark:text-gray-200">
+            {/* Added text-gray-800 above to fix visibility in light mode */}
+
             {!editing ? (
               <button
                 onClick={() => setEditing(true)}
-                className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded dark:text-gray-200"
+                className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
               >
                 ✏️ Rename
               </button>
             ) : (
               <div className="flex gap-1 p-1">
                 <input
-                  className="w-full px-1 py-0.5 rounded border bg-white dark:bg-gray-700 text-[10px] dark:text-white"
+                  className="w-full px-1 py-0.5 rounded border bg-white dark:bg-gray-700 text-[10px] text-gray-900 dark:text-white"
                   value={nameValue}
                   onChange={(e) => setNameValue(e.target.value)}
+                  onClick={(e) => e.stopPropagation()}
                 />
                 <button
                   onClick={() => {
@@ -842,38 +851,39 @@ export default function Rooms() {
                 toggleAI(room.id);
                 setOpen(false);
               }}
-              className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded dark:text-gray-200"
+              className="w-full text-left px-2 py-1.5 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
             >
               🤖 {room.allowAI ? "Disable AI" : "Enable AI"}
             </button>
             <button
               onClick={() => {
+                // Close the menu immediately so it doesn't stay open while toast is showing
+                setOpen(false);
+
                 toast.custom(
                   (t) => (
                     <div className="bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg p-3 shadow-xl text-xs max-w-xs">
-                      {" "}
                       <p className="mb-2 text-gray-800 dark:text-gray-100">
                         Delete room{" "}
                         <span className="font-semibold">"{room.name}"</span>?
-                      </p>{" "}
+                      </p>
                       <div className="flex justify-end gap-2">
-                        {" "}
                         <button
                           onClick={() => toast.dismiss(t.id)}
                           className="px-2 py-1 rounded border border-gray-300 dark:border-gray-600 text-gray-600 dark:text-gray-200"
                         >
                           Cancel
-                        </button>{" "}
+                        </button>
                         <button
                           onClick={() => {
-                            deleteRoom(room.id);
-                            toast.dismiss(t.id);
+                            toast.dismiss(t.id); // <--- FIX: Dismiss toast immediately first
+                            deleteRoom(room.id); // Then run the delete logic
                           }}
                           className="px-2 py-1 rounded bg-red-500 text-white"
                         >
                           Delete
-                        </button>{" "}
-                      </div>{" "}
+                        </button>
+                      </div>
                     </div>
                   ),
                   { duration: TOAST_DURATION.info * 2 }

@@ -51,20 +51,6 @@ export default function FriendMode() {
   const reactionOpenedAtRef = useRef(0);
   const messagesContainerRef = useRef(null);
 
-  // ---------- Toast system ----------
-  const [toasts, setToasts] = useState([]);
-  const DEFAULT_TOAST_MS = 1400;
-  const SUCCESS_TOAST_MS = 2000;
-
-  const addToast = (message, type = "info", duration = DEFAULT_TOAST_MS) => {
-    const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, message, type }]);
-    setTimeout(() => {
-      setToasts((t) => t.filter((x) => x.id !== id));
-    }, duration);
-  };
-  // -----------------------------------
-
   // ---------- THEME BACKGROUND ----------
   const themeClass = useMemo(() => {
     switch (theme) {
@@ -218,9 +204,6 @@ export default function FriendMode() {
     setInput("");
     setLoading(true);
 
-    // small toast to indicate send
-    addToast("Message sent", "info", DEFAULT_TOAST_MS);
-
     try {
       const reply = await callLCai(
         "friend",
@@ -237,7 +220,6 @@ export default function FriendMode() {
       };
 
       setMessages((prev) => [...prev, replyMsg]);
-      addToast("LC_Ai replied", "success", SUCCESS_TOAST_MS);
     } catch (err) {
       setMessages((prev) => [
         ...prev,
@@ -249,7 +231,6 @@ export default function FriendMode() {
           reactions: [],
         },
       ]);
-      addToast("Couldn't get a reply. Try again.", "error", SUCCESS_TOAST_MS);
     } finally {
       setLoading(false);
     }
@@ -263,29 +244,14 @@ export default function FriendMode() {
     setTheme(id);
     localStorage.setItem(THEME_STORAGE_KEY, id);
     const themeObj = THEMES.find((t) => t.id === id);
-    addToast(
-      `${(themeObj && themeObj.label) || id} theme applied`,
-      "success",
-      DEFAULT_TOAST_MS
-    );
   };
 
   // ONE reaction per message
   const handleReactionClick = (messageId, emoji) => {
     setActiveReactionMessageId(null);
 
-    // inspect current message to decide toast text
     const target = messages.find((m) => m.id === messageId);
     const existing = target?.reactions?.find((r) => r.userId === "me");
-
-    let toastText = "Reaction added";
-    if (existing) {
-      if (existing.emoji === emoji) {
-        toastText = "Reaction removed";
-      } else {
-        toastText = "Reaction updated";
-      }
-    }
 
     setMessages((prev) =>
       prev.map((m) => {
@@ -307,8 +273,6 @@ export default function FriendMode() {
         return { ...m, reactions: next };
       })
     );
-
-    addToast(toastText, "info", DEFAULT_TOAST_MS);
   };
 
   const startLongPress = (messageId) => {
@@ -335,7 +299,6 @@ export default function FriendMode() {
     if (key) localStorage.removeItem(key);
     setActiveReactionMessageId(null);
     setMessages([makeInitialMessage(user?.name)]);
-    addToast("Chat cleared", "info", DEFAULT_TOAST_MS);
   };
 
   const modeLabel = isAuthenticated
@@ -524,34 +487,6 @@ export default function FriendMode() {
           </button>
         </div>
       </form>
-
-      {/* Toasts (top-right) */}
-      <div
-        aria-live="polite"
-        className="fixed top-4 right-4 z-50 flex flex-col gap-2 items-end"
-      >
-        {toasts.map((t) => (
-          <div
-            key={t.id}
-            className={`max-w-sm w-full px-4 py-2 rounded shadow-md text-sm
-              ${t.type === "success" ? "bg-emerald-600 text-white" : ""}
-              ${t.type === "error" ? "bg-red-600 text-white" : ""}
-              ${t.type === "info" ? "bg-slate-700 text-white" : ""}
-              ${t.type === "warning" ? "bg-amber-500 text-black" : ""}
-            `}
-            style={{ animation: "toastIn .18s ease-out" }}
-          >
-            {t.message}
-          </div>
-        ))}
-      </div>
-
-      <style>{`
-        @keyframes toastIn {
-          from { transform: translateY(-6px) scale(0.98); opacity: 0; }
-          to   { transform: translateY(0) scale(1); opacity: 1; }
-        }
-      `}</style>
     </div>
   );
 }

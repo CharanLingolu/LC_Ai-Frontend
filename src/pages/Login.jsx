@@ -65,6 +65,14 @@ export default function Login() {
     </svg>
   );
 
+  // ---------------- Password Reset State ----------------
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetStep, setResetStep] = useState(1); // 1 = request, 2 = confirm
+  const [resetToken, setResetToken] = useState("");
+  const [resetNewPassword, setResetNewPassword] = useState("");
+  const [resetLoading, setResetLoading] = useState(false);
+
   // ---------------- Email/PW Login ----------------
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -167,73 +175,329 @@ export default function Login() {
     }
   };
 
+  // ---------------- Password Reset Handlers ----------------
+
+  // Step 1: request reset (sends email with token/link)
+  const handleRequestReset = async (e) => {
+    e.preventDefault();
+    setError("");
+    const targetEmail = (resetEmail || email).trim();
+    if (!targetEmail) return setErrorToast("Please enter your email to reset.");
+
+    try {
+      setResetLoading(true);
+
+      const res = await fetch(
+        "https://lc-ai-backend-a080.onrender.com/api/auth/password-reset/request",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: targetEmail }),
+        }
+      );
+
+      const text = await res.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch (err) {}
+
+      if (!res.ok) {
+        const message =
+          (data && (data.error || data.message)) ||
+          (text ? text.substring(0, 200) : "Failed to request password reset");
+        setResetLoading(false);
+        return setErrorToast(message);
+      }
+
+      // success: move to confirm step
+      setResetEmail(targetEmail);
+      setResetStep(2);
+      addToast(
+        data?.message || "Reset email sent — check your inbox",
+        "success",
+        SUCCESS_TOAST_LIFETIME
+      );
+      setResetLoading(false);
+    } catch (err) {
+      console.error("Request reset error:", err);
+      setResetLoading(false);
+      setErrorToast("Failed to request password reset. Try again.");
+    }
+  };
+
+  // Step 2: confirm reset (token + new password)
+  const handleConfirmReset = async (e) => {
+    e.preventDefault();
+    setError("");
+
+    if (!resetEmail.trim() || !resetToken.trim() || !resetNewPassword.trim()) {
+      return setErrorToast("Please fill email, token and new password.");
+    }
+
+    try {
+      setResetLoading(true);
+
+      const res = await fetch(
+        "https://lc-ai-backend-a080.onrender.com/api/auth/password-reset/confirm",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: resetEmail,
+            token: resetToken,
+            newPassword: resetNewPassword,
+          }),
+        }
+      );
+
+      const text = await res.text();
+      let data = null;
+      try {
+        data = text ? JSON.parse(text) : null;
+      } catch (err) {}
+
+      if (!res.ok) {
+        const message =
+          (data && (data.error || data.message)) ||
+          (text ? text.substring(0, 200) : "Failed to reset password");
+        setResetLoading(false);
+        return setErrorToast(message);
+      }
+
+      // success: optionally auto-login if backend returned token
+      if (data?.token && data?.user) {
+        addToast(
+          "Password reset successful — signed in",
+          "success",
+          SUCCESS_TOAST_LIFETIME
+        );
+        login(data.user, data.token);
+        setTimeout(() => {
+          setResetLoading(false);
+          navigate("/rooms", { replace: true });
+        }, SUCCESS_TOAST_LIFETIME);
+        return;
+      }
+
+      addToast(
+        data?.message || "Password reset successful",
+        "success",
+        SUCCESS_TOAST_LIFETIME
+      );
+      // close reset UI
+      setResetLoading(false);
+      setResetOpen(false);
+      setResetStep(1);
+      setResetToken("");
+      setResetNewPassword("");
+    } catch (err) {
+      console.error("Confirm reset error:", err);
+      setResetLoading(false);
+      setErrorToast("Failed to reset password. Try again.");
+    }
+  };
+
+  const toggleReset = () => {
+    setResetOpen((v) => {
+      const next = !v;
+      if (!next) {
+        // closing: reset fields
+        setResetStep(1);
+        setResetEmail("");
+        setResetToken("");
+        setResetNewPassword("");
+      } else {
+        // opening: prefill resetEmail from login email
+        setResetEmail(email || "");
+      }
+      return next;
+    });
+  };
+
   return (
     <>
-      <div className="max-w-md mx-auto mt-12 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-md">
-        <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100 mb-5">
-          Login to LC_Ai
-        </h1>
+      {/* Outer centered viewport container — prevents page-level clipping */}
+      <div className="min-h-screen w-full flex items-center justify-center px-2 py-4 bg-transparent">
+        {/* Card wrapper: constrained to viewport height; this ensures no page clipping.
+            On very short screens we gently scale down so everything fits. */}
+        <div
+          className="login-card-wrapper w-full max-w-md rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-3 sm:p-5 shadow-md"
+          style={{ maxHeight: "96vh" }}
+        >
+          <h1 className="title text-lg sm:text-xl font-semibold text-slate-900 dark:text-slate-100 mb-3 sm:mb-5">
+            Login to LC_Ai
+          </h1>
 
-        {error && (
-          <p className="text-red-500 text-sm mb-3 text-center">{error}</p>
-        )}
+          {error && (
+            <p className="text-red-500 text-sm mb-2 text-center">{error}</p>
+          )}
 
-        {/* Email/password login */}
-        <form onSubmit={handleSubmit} className="space-y-4 mb-4">
-          <div>
-            <label className="block text-xs text-slate-600 dark:text-slate-300 mb-1">
-              Email
-            </label>
-            <input
-              type="email"
-              autoComplete="email"
-              className="w-full px-3 py-2 rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@example.com"
-            />
+          {/* Email/password login */}
+          <form onSubmit={handleSubmit} className="space-y-3 mb-3">
+            <div>
+              <label className="block text-xs text-slate-600 dark:text-slate-300 mb-1">
+                Email
+              </label>
+              <input
+                type="email"
+                autoComplete="email"
+                className="w-full px-3 py-2 text-sm rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-900"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                placeholder="you@example.com"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs text-slate-600 dark:text-slate-300 mb-1">
+                Password
+              </label>
+              <input
+                type="password"
+                autoComplete="current-password"
+                className="w-full px-3 py-2 text-sm rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-900"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                placeholder="******"
+              />
+            </div>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="w-full px-3 py-2 text-sm rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400 flex justify-center items-center"
+            >
+              {loading && <Spinner size={14} />}
+              {loading ? "Logging in..." : "Login"}
+            </button>
+
+            <div className="flex items-center justify-between mt-1">
+              <button
+                type="button"
+                onClick={toggleReset}
+                className="text-xs text-slate-500 hover:underline"
+              >
+                Forgot password?
+              </button>
+              <Link
+                to="/signup"
+                className="text-xs text-blue-500 hover:underline"
+              >
+                Sign up
+              </Link>
+            </div>
+          </form>
+
+          {/* Divider */}
+          <div className="flex items-center gap-2 my-3">
+            <div className="flex-1 h-px bg-gray-300 dark:bg-gray-700" />
+            <span className="text-xs text-slate-500 dark:text-slate-400">
+              or
+            </span>
+            <div className="flex-1 h-px bg-gray-300 dark:bg-gray-700" />
           </div>
 
-          <div>
-            <label className="block text-xs text-slate-600 dark:text-slate-300 mb-1">
-              Password
-            </label>
-            <input
-              type="password"
-              autoComplete="current-password"
-              className="w-full px-3 py-2 rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-900 text-sm"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="******"
-            />
+          {/* Google login */}
+          <div className="mb-3">
+            <GoogleSignInButton onSuccess={handleGoogleSuccess} />
           </div>
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full px-4 py-2 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:bg-blue-400 flex justify-center items-center"
-          >
-            {loading && <Spinner />}
-            {loading ? "Logging in..." : "Login"}
-          </button>
-        </form>
+          {/* Responsive & compact Password Reset Panel */}
+          {!resetOpen ? null : (
+            <div className="mt-2 w-full">
+              <div className="w-full max-w-full bg-white/80 dark:bg-gray-900 border rounded p-3 sm:p-4">
+                {resetStep === 1 ? (
+                  <form onSubmit={handleRequestReset} className="space-y-2">
+                    <p className="text-sm text-slate-600 dark:text-slate-300 mb-2">
+                      Enter your email to receive a password reset token.
+                    </p>
 
-        {/* Divider */}
-        <div className="flex items-center gap-2 my-4">
-          <div className="flex-1 h-px bg-gray-300 dark:bg-gray-700" />
-          <span className="text-xs text-slate-500 dark:text-slate-400">or</span>
-          <div className="flex-1 h-px bg-gray-300 dark:bg-gray-700" />
+                    <input
+                      type="email"
+                      autoComplete="email"
+                      className="w-full px-3 py-2 text-sm rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-800"
+                      value={resetEmail}
+                      onChange={(e) => setResetEmail(e.target.value)}
+                      placeholder="you@example.com"
+                    />
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <button
+                        type="submit"
+                        disabled={resetLoading}
+                        className="flex-1 px-3 py-2 text-sm rounded-lg bg-amber-600 text-white hover:bg-amber-700 disabled:bg-amber-300 flex items-center justify-center"
+                      >
+                        {resetLoading && <Spinner size={14} />}
+                        {resetLoading ? "Sending..." : "Send reset email"}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setResetStep(2)}
+                        className="px-3 py-2 text-sm rounded-lg border w-full sm:w-auto"
+                      >
+                        I have token
+                      </button>
+                    </div>
+                  </form>
+                ) : (
+                  <form onSubmit={handleConfirmReset} className="space-y-2">
+                    <p className="text-sm text-slate-600 dark:text-slate-300 mb-2">
+                      Enter the token you received and a new password.
+                    </p>
+
+                    <input
+                      type="email"
+                      autoComplete="email"
+                      className="w-full px-3 py-2 text-sm rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-800"
+                      value={resetEmail}
+                      onChange={(e) => setResetEmail(e.target.value)}
+                      placeholder="you@example.com"
+                    />
+
+                    <input
+                      type="text"
+                      autoComplete="one-time-code"
+                      className="w-full px-3 py-2 text-sm rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-800"
+                      value={resetToken}
+                      onChange={(e) => setResetToken(e.target.value)}
+                      placeholder="Reset token"
+                    />
+
+                    <input
+                      type="password"
+                      autoComplete="new-password"
+                      className="w-full px-3 py-2 text-sm rounded-lg border dark:border-gray-600 bg-white dark:bg-gray-800"
+                      value={resetNewPassword}
+                      onChange={(e) => setResetNewPassword(e.target.value)}
+                      placeholder="New password"
+                    />
+
+                    <div className="flex flex-col sm:flex-row gap-2">
+                      <button
+                        type="submit"
+                        disabled={resetLoading}
+                        className="flex-1 px-3 py-2 text-sm rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-emerald-300 flex items-center justify-center"
+                      >
+                        {resetLoading && <Spinner size={14} />}
+                        {resetLoading ? "Setting..." : "Set new password"}
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setResetStep(1)}
+                        className="px-3 py-2 text-sm rounded-lg border w-full sm:w-auto"
+                      >
+                        Back
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-
-        {/* Google login */}
-        <GoogleSignInButton onSuccess={handleGoogleSuccess} />
-
-        <p className="text-xs text-center mt-4 text-slate-500 dark:text-slate-400">
-          Don't have an account?{" "}
-          <Link to="/signup" className="text-blue-500 hover:underline">
-            Sign up
-          </Link>
-        </p>
       </div>
 
       {/* Toast container */}
@@ -254,8 +518,44 @@ export default function Login() {
         ))}
       </div>
 
-      {/* Toast animation */}
+      {/* responsive shrink + small-height scaling to guarantee fit on tiny viewports */}
       <style>{`
+        /* general small-screen tweaks (reduces spacing) */
+        @media (max-width: 420px) {
+          .login-card-wrapper { padding: 10px !important; border-radius: 10px !important; }
+          .login-card-wrapper .title { font-size: 15px !important; margin-bottom: 8px !important; }
+          .login-card-wrapper input { padding-top: 8px !important; padding-bottom: 8px !important; }
+          .login-card-wrapper button { padding-top: 8px !important; padding-bottom: 8px !important; font-size: 13px !important; }
+          .login-card-wrapper .mb-3 { margin-bottom: 8px !important; }
+          .login-card-wrapper .my-3 { margin-top: 8px !important; margin-bottom: 8px !important; }
+        }
+
+        /* gentle scale-down when viewport height is small (keeps all content visible) */
+        @media (max-height: 700px) {
+          .login-card-wrapper {
+            transform: scale(0.96);
+            transform-origin: top center;
+          }
+        }
+        @media (max-height: 660px) {
+          .login-card-wrapper {
+            transform: scale(0.92);
+            transform-origin: top center;
+          }
+        }
+        @media (max-height: 620px) {
+          .login-card-wrapper {
+            transform: scale(0.88);
+            transform-origin: top center;
+          }
+        }
+        @media (max-height: 580px) {
+          .login-card-wrapper {
+            transform: scale(0.84);
+            transform-origin: top center;
+          }
+        }
+
         @keyframes toastIn {
           from { opacity: 0; transform: translateY(-6px) scale(0.96); }
           to   { opacity: 1; transform: translateY(0) scale(1); }

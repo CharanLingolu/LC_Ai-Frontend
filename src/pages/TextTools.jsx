@@ -15,6 +15,12 @@ export default function TextTools() {
   const [output, setOutput] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // --- NEW: Clear Function ---
+  const handleClear = () => {
+    setInput(""); // Clears the text area
+    setOutput(""); // Clears the response/result area
+  };
+
   const handleRun = async (e) => {
     e.preventDefault();
     const text = input.trim();
@@ -74,13 +80,24 @@ export default function TextTools() {
             onChange={(e) => setInput(e.target.value)}
           />
 
-          <button
-            type="submit"
-            disabled={loading}
-            className="shrink-0 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-blue-400"
-          >
-            {loading ? "Processing..." : "Run"}
-          </button>
+          {/* --- UPDATED: Buttons Container --- */}
+          <div className="flex gap-2 shrink-0">
+            <button
+              type="button" // Important: type="button" prevents form submission
+              onClick={handleClear}
+              className="px-4 py-2 rounded-lg bg-gray-200 text-gray-700 text-sm font-medium hover:bg-gray-300 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+            >
+              Clear
+            </button>
+
+            <button
+              type="submit"
+              disabled={loading}
+              className="flex-1 px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:bg-blue-400"
+            >
+              {loading ? "Processing..." : "Run"}
+            </button>
+          </div>
         </form>
       </div>
 

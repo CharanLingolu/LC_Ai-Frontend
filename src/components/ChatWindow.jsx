@@ -147,7 +147,7 @@ export default function ChatWindow({
 
   return (
     <div
-      className={`h-full flex flex-col rounded-xl border border-gray-200 dark:border-gray-700 bg-transparent shadow-sm overflow-hidden chat-themable-container ${themeClass}`}
+      className={`h-full flex flex-col rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden chat-themable-container ${themeClass}`}
     >
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-200/70 dark:border-gray-700 bg-gray-900/40 dark:bg-gray-900/70 flex items-center justify-between shrink-0">
@@ -210,7 +210,7 @@ export default function ChatWindow({
                 }`}
               >
                 {!isUser && (
-                  <div className="text-[10px] text-slate-100 mb-1">
+                  <div className="text-[10px] text-slate-100 mb-1 sender-label">
                     {isAi ? "LC_Ai" : "Friend"}
                   </div>
                 )}
@@ -232,7 +232,7 @@ export default function ChatWindow({
                 </div>
                 <div className="flex items-center gap-2 mt-1 mx-1">
                   {timeLabel && (
-                    <span className="text-[9px] text-gray-100/80">
+                    <span className="text-[9px] text-gray-100/80 message-time">
                       {timeLabel}
                     </span>
                   )}
@@ -251,7 +251,7 @@ export default function ChatWindow({
                 </div>
 
                 {activeReactionMessageId === m.id && (
-                  <div className="mt-1 flex gap-1 text-xs bg-black/20 px-2 py-1 rounded-full">
+                  <div className="mt-1 flex gap-1 text-xs bg-black/80 px-2 py-1 rounded-full z-10">
                     {REACTION_EMOJIS.map((emoji) => (
                       <button
                         key={emoji}
@@ -260,7 +260,7 @@ export default function ChatWindow({
                           handleReactionClick(m.id, emoji);
                           setActiveReactionMessageId(null);
                         }}
-                        className="px-1 rounded hover:bg-black/25"
+                        className="px-1 rounded hover:bg-white/20"
                       >
                         {emoji}
                       </button>
@@ -284,7 +284,7 @@ export default function ChatWindow({
       {/* Input */}
       <div className="border-t border-gray-200/50 dark:border-gray-700 p-3 shrink-0 chat-input-area bg-black/40">
         {/* Emoji row */}
-        <div className="flex gap-1 mb-2 text-xl">
+        <div className="flex gap-1 mb-2 text-xl INPUT_EMOJIS">
           {INPUT_EMOJIS.map((em) => (
             <button
               key={em}

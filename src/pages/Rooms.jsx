@@ -39,21 +39,26 @@ function normalizeRoom(room) {
   };
 }
 
-// -- safe persist of a single updatedRoom into localStorage (read-modify-write)
-const persistRoomToStorage = (storageKey, updatedRoom) => {
+const persistRoomToStorage = (storageKey, updatedRoom, currentRooms = []) => {
   try {
     const raw = localStorage.getItem(storageKey);
     const stored = raw ? JSON.parse(raw) : null;
+
     const baseList = Array.isArray(stored)
       ? stored
-      : Array.isArray(rooms)
-      ? rooms
+      : Array.isArray(currentRooms)
+      ? currentRooms
       : [];
-    const merged = baseList.some((r) => String(r.id) === String(updatedRoom.id))
+
+    const exists = baseList.some(
+      (r) => String(r.id) === String(updatedRoom.id)
+    );
+    const merged = exists
       ? baseList.map((r) =>
           String(r.id) === String(updatedRoom.id) ? updatedRoom : r
         )
       : [...baseList, updatedRoom];
+
     localStorage.setItem(storageKey, JSON.stringify(merged));
   } catch (e) {
     console.warn("persistRoomToStorage failed", e);
@@ -77,7 +82,6 @@ export default function Rooms() {
   const [newRoomAI, setNewRoomAI] = useState(true);
   const [joinCode, setJoinCode] = useState("");
 
-  // ensure pendingRoomCode state exists (was missing in error)
   const [pendingRoomCode, setPendingRoomCode] = useState(null);
 
   const [isGuest, setIsGuest] = useState(() => {
@@ -87,25 +91,17 @@ export default function Rooms() {
     return localStorage.getItem(GUEST_NAME_KEY) || "";
   });
 
-  // Refs to handle mutable data inside listeners without re-triggering effects
+  // refs for mutable state in socket handlers
   const createToastIdRef = useRef(null);
   const pendingRoomCodeRef = useRef(null);
   const hiddenRoomsRef = useRef([]);
 
-  // Refs for User data so the socket listener can see them without stale closures
+  // refs for auth and user to avoid stale closure issues inside socket handlers
   const userRef = useRef(user);
   const isAuthenticatedRef = useRef(isAuthenticated);
 
-  // hidden rooms set
-  const [hiddenRooms, setHiddenRooms] = useState(() => {
-    const key = getHiddenKey();
-    try {
-      const raw = localStorage.getItem(key);
-      return raw ? JSON.parse(raw) : [];
-    } catch {
-      return [];
-    }
-  });
+  // hidden rooms state (per-user)
+  const [hiddenRooms, setHiddenRooms] = useState([]);
 
   const selectedRoom = rooms.find((r) => r.id === selectedRoomId) || null;
 
@@ -116,31 +112,101 @@ export default function Rooms() {
     return HIDDEN_ROOMS_PREFIX + "guest_" + guestId;
   }
 
+  // update both ref and state synchronously so socket handlers see the change immediately
   function saveHiddenRooms(next) {
     const key = getHiddenKey();
     try {
       localStorage.setItem(key, JSON.stringify(next));
-    } catch {}
+    } catch (e) {
+      // ignore
+    }
+    hiddenRoomsRef.current = next;
     setHiddenRooms(next);
   }
 
+  // load hidden rooms when auth changes (ensures correct key for signed users)
+  useEffect(() => {
+    try {
+      const key = getHiddenKey();
+      const raw = localStorage.getItem(key);
+      const parsed = raw ? JSON.parse(raw) : [];
+      const arr = Array.isArray(parsed) ? parsed.map(String) : [];
+      hiddenRoomsRef.current = arr;
+      setHiddenRooms(arr);
+    } catch (e) {
+      hiddenRoomsRef.current = [];
+      setHiddenRooms([]);
+    }
+  }, [isAuthenticated, user?.email]);
+
   function hideRoomForMe(roomId) {
     if (!roomId) return;
-    const next = Array.from(new Set([...(hiddenRooms || []), String(roomId)]));
-    saveHiddenRooms(next);
 
-    setRooms((prev) => prev.filter((r) => String(r.id) !== String(roomId)));
+    // add to hidden list
+    const currentHidden = Array.isArray(hiddenRooms)
+      ? hiddenRooms.map(String)
+      : [];
+    const nextHidden = Array.from(new Set([...currentHidden, String(roomId)]));
+    saveHiddenRooms(nextHidden);
+
+    // remove from UI and persisted lists
+    setRooms((prev) => {
+      const next = prev.filter((r) => String(r.id) !== String(roomId));
+
+      try {
+        if (isAuthenticated && user?.email) {
+          const key = getUserRoomsKey(user.email);
+          if (key) {
+            const raw = localStorage.getItem(key);
+            if (raw) {
+              let parsed;
+              try {
+                parsed = JSON.parse(raw);
+              } catch (e) {
+                parsed = [];
+              }
+              if (Array.isArray(parsed)) {
+                const filtered = parsed.filter(
+                  (r) => String(r.id) !== String(roomId)
+                );
+                localStorage.setItem(key, JSON.stringify(filtered));
+              }
+            }
+          }
+        } else {
+          const rawGuest = localStorage.getItem(GUEST_ROOMS_KEY);
+          if (rawGuest) {
+            let parsedG;
+            try {
+              parsedG = JSON.parse(rawGuest);
+            } catch (e) {
+              parsedG = [];
+            }
+            if (Array.isArray(parsedG)) {
+              const filteredG = parsedG.filter(
+                (r) => String(r.id) !== String(roomId)
+              );
+              localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(filteredG));
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("hideRoomForMe: failed to update persisted rooms", e);
+      }
+
+      return next;
+    });
 
     if (String(selectedRoomId) === String(roomId)) {
       setSelectedRoomId(null);
       try {
         localStorage.removeItem(LAST_ROOM_KEY);
-      } catch {}
+      } catch (e) {}
     }
 
     try {
       socket.emit("leave_room", { roomId });
-    } catch {}
+    } catch (e) {}
 
     toast.success("You left the room.", {
       duration: TOAST_DURATION.success,
@@ -164,14 +230,14 @@ export default function Rooms() {
       .filter((r) => !hiddenMap.has(String(r.id)));
   }
 
-  // ---------- 1. Sync State to Refs ----------
+  // make sure refs are in sync
   useEffect(() => {
     hiddenRoomsRef.current = hiddenRooms;
     userRef.current = user;
     isAuthenticatedRef.current = isAuthenticated;
   }, [hiddenRooms, user, isAuthenticated]);
 
-  // ---------- 2. Restore rooms from localStorage ----------
+  // restore rooms from localStorage (either signed user key or guest list)
   useEffect(() => {
     if (isAuthenticated && user?.email) {
       const key = getUserRoomsKey(user.email);
@@ -213,7 +279,7 @@ export default function Rooms() {
     }
   }, [isAuthenticated, user?.email, setRooms, hiddenRooms]);
 
-  // ---------- 3. Registration Effect ----------
+  // registration (tell socket who we are)
   useEffect(() => {
     const performRegistration = () => {
       if (isAuthenticated && user) {
@@ -260,14 +326,63 @@ export default function Rooms() {
     performRegistration();
   }, [isAuthenticated, user?._id, user?.email, isGuest]);
 
-  // ---------- 4. Socket Listeners Effect ----------
+  // ---------- Socket listeners ----------
   useEffect(() => {
     const handleUpdate = (serverRooms) => {
       const currentUser = userRef.current;
       const isAuth = isAuthenticatedRef.current;
 
+      // first, normalize and apply hidden filter
       let normalized = applyHiddenFilter(serverRooms);
 
+      // --- MERGE locally-stored rooms for this user (robustness) ---
+      // This ensures that if a signed user joined a room and the server didn't
+      // include it in the room_list_update (yet), the client still shows it.
+      try {
+        const storageKey = localStorage.getItem(GUEST_ID_KEY)
+          ? GUEST_ROOMS_KEY
+          : isAuth && currentUser?.email
+          ? getUserRoomsKey(currentUser.email)
+          : null;
+
+        if (storageKey) {
+          const raw = localStorage.getItem(storageKey) || "[]";
+          const parsed = JSON.parse(raw);
+          const storedRooms = Array.isArray(parsed)
+            ? parsed.map(normalizeRoom).filter(Boolean)
+            : [];
+
+          // Add storedRooms into normalized list if missing (prefer server object when present)
+          const normalizedById = new Map(
+            normalized.map((r) => [String(r.id), r])
+          );
+          for (const sr of storedRooms) {
+            if (!sr || !sr.id) continue;
+            if (!normalizedById.has(String(sr.id))) {
+              // Only add if not hidden (applyHiddenFilter already removed hidden ones)
+              normalized.push(sr);
+            } else {
+              // merge: prefer server room but ensure we keep meaningful fields from stored room
+              const serverRoom = normalizedById.get(String(sr.id));
+              normalizedById.set(String(sr.id), { ...sr, ...serverRoom });
+            }
+          }
+          // if normalizedById changed, rebuild normalized array (but keep original order from server)
+          // We'll just ensure duplicate ids are removed:
+          const seen = new Set();
+          normalized = normalized.filter((r) => {
+            const id = String(r.id);
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+          });
+        }
+      } catch (e) {
+        // ignore merge errors
+        console.warn("Failed merging stored rooms into server rooms:", e);
+      }
+
+      // compute membership set from stored data (synchronous localStorage read for reliability)
       let myJoinedRoomIds = new Set();
       try {
         const storageKey = localStorage.getItem(GUEST_ID_KEY)
@@ -286,14 +401,42 @@ export default function Rooms() {
         }
       } catch (e) {}
 
+      // additionally, if signed in, inspect server room members/owner fields to determine membership
+      if (isAuth && currentUser?.email && Array.isArray(normalized)) {
+        const email = currentUser.email;
+        const uid = currentUser._id || currentUser.id;
+        normalized.forEach((r) => {
+          try {
+            if (!r) return;
+            if (r.ownerId && String(r.ownerId) === String(email)) {
+              myJoinedRoomIds.add(String(r.id));
+              return;
+            }
+            if (Array.isArray(r.members)) {
+              const found = r.members.some((m) => {
+                if (!m) return false;
+                const mid = m.id ?? m.userId ?? m._id ?? m.email;
+                return (
+                  String(mid) === String(email) ||
+                  String(mid) === String(uid) ||
+                  String(m?.id) === String(email)
+                );
+              });
+              if (found) myJoinedRoomIds.add(String(r.id));
+            }
+          } catch (e) {}
+        });
+      }
+
+      // Keep only rooms where user is owner or has joined
       normalized = normalized.filter((room) => {
-        // Use currentUser from Ref to avoid stale closure
         const isOwner =
           isAuth && currentUser?.email && room.ownerId === currentUser.email;
         const hasJoined = myJoinedRoomIds.has(String(room.id));
         return isOwner || hasJoined;
       });
 
+      // update UI list + persist to localStorage
       setRooms((prev) => {
         const withPresence = normalized.map((room) => {
           const prevMatch = prev.find((p) => p.id === room.id);
@@ -331,7 +474,7 @@ export default function Rooms() {
         return withPresence;
       });
 
-      // --- Robust handling of pending room creation (clear toast once) ---
+      // pending room creation handling (unchanged)
       if (pendingRoomCodeRef.current) {
         const codeToFind = String(pendingRoomCodeRef.current);
         const byCode = normalized.find((r) => String(r.code) === codeToFind);
@@ -342,7 +485,6 @@ export default function Rooms() {
               localStorage.setItem(LAST_ROOM_KEY, byCode.id);
             } catch (e) {}
 
-            // Dismiss earlier "Creating room..." toast if we have an id
             if (createToastIdRef.current) {
               try {
                 toast.dismiss(createToastIdRef.current);
@@ -354,11 +496,9 @@ export default function Rooms() {
               duration: TOAST_DURATION.success,
             });
 
-            // clear pending
             setPendingRoomCode(null);
             pendingRoomCodeRef.current = null;
 
-            // select new room
             setSelectedRoomId(byCode.id);
           }, 0);
 
@@ -493,7 +633,7 @@ export default function Rooms() {
     };
   }, []);
 
-  // ---------- Clear when logged out ----------
+  // Clear when logged out
   useEffect(() => {
     if (!isAuthenticated && !isGuest) {
       setRooms([]);
@@ -502,7 +642,7 @@ export default function Rooms() {
     }
   }, [isAuthenticated, isGuest, setRooms]);
 
-  // ---------- Presence join/leave ----------
+  // Presence join/leave
   useEffect(() => {
     if (!selectedRoomId) return;
 
@@ -526,7 +666,7 @@ export default function Rooms() {
   const generateRoomCode = () =>
     Math.floor(100000 + Math.random() * 900000).toString();
 
-  // ---------- CREATE ROOM ----------
+  // CREATE ROOM
   const handleCreateRoom = (e) => {
     if (e?.preventDefault) e.preventDefault();
     if (!isAuthenticated) {
@@ -565,7 +705,6 @@ export default function Rooms() {
     createToastIdRef.current = toastId;
     toast.loading("Creating room...", { id: toastId });
 
-    // IMPORTANT: set both state and ref so handlers find the pending code
     setPendingRoomCode(code);
     pendingRoomCodeRef.current = code;
 
@@ -573,8 +712,7 @@ export default function Rooms() {
     setNewRoomName("");
   };
 
-  // ---------- HELPER: attempt to POST to candidate endpoints ----------
-  // ---------- HELPER: attempt to POST to candidate endpoints (uses provided headers) ----------
+  // try POST to join endpoints
   async function tryPostToJoinEndpoints(body, extraHeaders = {}) {
     const base = (import.meta.env.VITE_BACKEND_URL || "").replace(/\/$/, "");
     const endpoints = [
@@ -605,7 +743,6 @@ export default function Rooms() {
         const json = await res.json().catch(() => null);
         return { ok: true, data: json, url };
       } catch (err) {
-        // try next endpoint
         continue;
       }
     }
@@ -613,7 +750,7 @@ export default function Rooms() {
     return { ok: false, data: null };
   }
 
-  // ---------- JOIN ROOM ----------
+  // JOIN ROOM
   const handleJoinRoom = (code) => {
     const trimmed = code.trim();
     if (!trimmed) {
@@ -642,88 +779,115 @@ export default function Rooms() {
             userName: user.name,
           };
 
+          // Try REST join first (best-effort)
           const result = await tryPostToJoinEndpoints(body, headers);
-          if (!result.ok) {
-            toast.error("Failed to join room.", {
-              duration: TOAST_DURATION.error,
-            });
-            return;
-          }
 
-          const joinedRoom = result.data || serverRoom;
-          const normalized = normalizeRoom(joinedRoom);
+          const socketJoinPayload = {
+            code: trimmed,
+            userId: user._id || user.id,
+            email: user.email || null,
+            userName: user.name || user.email,
+          };
 
-          if (!normalized) {
-            toast.error("Failed to join room (invalid server response).", {
-              duration: TOAST_DURATION.error,
-            });
-            return;
-          }
-
-          // keep local visibility and storage (your existing behavior)
-          // keep local visibility and storage (your existing behavior)
-          unhideRoomForMe(normalized.id);
-          setRooms((prev) => {
-            const filtered = prev.filter((r) => r.id !== normalized.id);
-            const next = [...filtered, normalized];
-
-            if (user?.email) {
-              const key = getUserRoomsKey(user.email);
-              if (key) {
-                try {
-                  // safe persist using helper to avoid stale overwrite
-                  persistRoomToStorage(key, normalized);
-                } catch (e) {
-                  // fallback: try direct write
-                  try {
-                    localStorage.setItem(key, JSON.stringify(next));
-                  } catch (e2) {}
-                }
-              }
+          const applyJoinedRoomToUI = (joinedRoomObj) => {
+            const normalized = normalizeRoom(joinedRoomObj);
+            if (!normalized) {
+              toast.error("Failed to join room (invalid server response).", {
+                duration: TOAST_DURATION.error,
+              });
+              return;
             }
 
-            return next;
-          });
+            // unhide & persist locally (signed user)
+            unhideRoomForMe(normalized.id);
+            setRooms((prev) => {
+              const filtered = prev.filter((r) => r.id !== normalized.id);
+              const next = [...filtered, normalized];
 
-          setSelectedRoomId(normalized.id);
-          try {
-            localStorage.setItem(LAST_ROOM_KEY, normalized.id);
-          } catch (e) {}
+              if (user?.email) {
+                const key = getUserRoomsKey(user.email);
+                if (key) {
+                  try {
+                    persistRoomToStorage(key, normalized, prev);
+                  } catch (e) {
+                    try {
+                      localStorage.setItem(key, JSON.stringify(next));
+                    } catch (ee) {}
+                  }
+                }
+              }
 
-          // --- NEW: notify socket server so this socket is associated with the user
-          // and actually joins the room for presence/messages. This prevents the server
-          // from later filtering the room out of the client's room list.
-          try {
-            // 1) Ensure socket has user data (so server's filterRoomsForSocket can match)
-            socket.emit("register_user", {
-              userId: user._id || user.id,
-              email: user.email,
+              try {
+                localStorage.setItem(LAST_ROOM_KEY, normalized.id);
+              } catch (e) {}
+              return next;
             });
 
-            // 2) Ask the socket server to join the room (uses server join_room flow for presence)
-            //    server expects the roomId (object id string) — not the numeric code.
-            socket.emit("join_room", {
-              roomId: normalized.id,
-              displayName: user.name || null,
+            setSelectedRoomId(normalized.id);
+            toast.success(`Joined room "${normalized.name}" ✅`, {
+              duration: TOAST_DURATION.success,
             });
+          };
 
-            // 3) Ask server to refresh/send room list for this socket immediately
-            socket.emit("request_room_list");
+          let socketJoinTried = false;
+          try {
+            if (socket && socket.emit) {
+              socketJoinTried = true;
+              socket.emit(
+                "join_room_authenticated",
+                socketJoinPayload,
+                (resp) => {
+                  if (resp && resp.ok && resp.room) {
+                    applyJoinedRoomToUI(resp.room);
+                    try {
+                      socket.emit("request_room_list");
+                    } catch {}
+                    return;
+                  } else {
+                    const joinedRoom = result.data || serverRoom;
+                    applyJoinedRoomToUI(joinedRoom);
+                    try {
+                      socket.emit("register_user", {
+                        userId: user._id || user.id,
+                        email: user.email,
+                      });
+                      socket.emit("join_room", {
+                        roomId:
+                          (result.data &&
+                            (result.data.id || result.data._id)) ||
+                          serverRoom._id ||
+                          serverRoom.id ||
+                          serverRoom.code,
+                        displayName: user.name || user.email || null,
+                      });
+                      socket.emit("request_room_list");
+                    } catch {}
+                    return;
+                  }
+                }
+              );
+            }
           } catch (sockErr) {
-            // not fatal — local state is already updated, but server may not reflect it until later
-            console.warn("Socket notifications after join failed:", sockErr);
+            socketJoinTried = false;
           }
 
-          toast.success(`Joined room "${normalized.name}" ✅`, {
-            duration: TOAST_DURATION.success,
-          });
+          if (!socketJoinTried) {
+            if (!result.ok) {
+              toast.error("Failed to join room.", {
+                duration: TOAST_DURATION.error,
+              });
+              return;
+            }
+            const joinedRoom = result.data || serverRoom;
+            applyJoinedRoomToUI(joinedRoom);
+          }
         } catch (err) {
           toast.error("Failed to join room. Please try again.", {
             duration: TOAST_DURATION.error,
           });
         }
       } else {
-        // unchanged guest branch
+        // Guest flow unchanged
         const existingName = guestName && guestName.trim();
         const cleanName = existingName;
         if (!cleanName) {
@@ -847,44 +1011,124 @@ export default function Rooms() {
     window.location.reload();
   };
 
-  // Exit the **currently selected room**
+  // leaveRoomView (don't hide room)
+  const leaveRoomView = () => {
+    if (!selectedRoomId) return;
+
+    if (!isAuthenticated) {
+      try {
+        unhideRoomForMe(selectedRoomId);
+
+        const roomObj = rooms.find(
+          (r) => String(r.id) === String(selectedRoomId)
+        ) ||
+          selectedRoom || {
+            id: selectedRoomId,
+            name: "Room",
+            code: selectedRoomId,
+          };
+
+        try {
+          const raw = localStorage.getItem(GUEST_ROOMS_KEY);
+          const parsed = raw ? JSON.parse(raw) : [];
+          const arr = Array.isArray(parsed) ? parsed : [];
+          const exists = arr.some(
+            (r) => String(r.id) === String(selectedRoomId)
+          );
+          if (!exists) {
+            arr.push(roomObj);
+            localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(arr));
+          } else {
+            const updated = arr.map((r) =>
+              String(r.id) === String(selectedRoomId) ? { ...r, ...roomObj } : r
+            );
+            localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(updated));
+          }
+        } catch (e) {
+          try {
+            localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify([roomObj]));
+          } catch (ee) {
+            console.warn("leaveRoomView: failed to persist guest room", ee);
+          }
+        }
+
+        setRooms((prev) => {
+          if (prev.some((r) => String(r.id) === String(selectedRoomId)))
+            return prev;
+          return [...prev, roomObj];
+        });
+
+        // DO NOT remove LAST_ROOM_KEY here on purpose (keeps guest restore stable)
+        setSelectedRoomId(null);
+      } catch (err) {
+        console.warn("leaveRoomView (guest) error:", err);
+        setSelectedRoomId(null);
+      }
+      return;
+    }
+
+    // authenticated: leave view and clear LAST_ROOM_KEY
+    try {
+      socket.emit("leave_room", { roomId: selectedRoomId });
+    } catch (e) {}
+    setSelectedRoomId(null);
+    try {
+      localStorage.removeItem(LAST_ROOM_KEY);
+    } catch (e) {}
+  };
+
+  // exit current room: owner => close view; others => hide
   const handleExitCurrentRoom = () => {
     if (!selectedRoomId) {
       if (joinCode && joinCode.trim()) {
         const match = rooms.find(
           (r) => String(r.code) === String(joinCode.trim())
         );
-        if (match) hideRoomForMe(match.id);
-        else
+        if (match) {
+          hideRoomForMe(match.id);
+        } else {
           toast.error("No matching room found to exit.", {
             duration: TOAST_DURATION.error,
           });
+        }
       }
       return;
     }
 
-    const room = rooms.find((r) => r.id === selectedRoomId);
-    const isOwner =
-      isAuthenticated && user?.email && room?.ownerId === user.email;
+    const room =
+      rooms.find((r) => r.id === selectedRoomId) || selectedRoom || null;
+    const isOwner = !!(
+      isAuthenticated &&
+      user?.email &&
+      room &&
+      String(room.ownerId) === String(user.email)
+    );
 
     if (isOwner) {
-      // Owner: Just close the view
       setSelectedRoomId(null);
       try {
         localStorage.removeItem(LAST_ROOM_KEY);
       } catch (e) {}
       try {
         socket.emit("leave_room", { roomId: selectedRoomId });
-      } catch (e) {}
-    } else {
-      // Guest: Completely leave/hide the room
+      } catch (e) {
+        console.warn("socket leave_room failed:", e);
+      }
+      return;
+    }
+
+    try {
       hideRoomForMe(selectedRoomId);
+    } catch (err) {
+      console.warn("handleExitCurrentRoom hideRoomForMe failed:", err);
+      setSelectedRoomId(null);
+      try {
+        localStorage.removeItem(LAST_ROOM_KEY);
+      } catch (e) {}
     }
   };
 
-  /* ---------- Replace existing SettingsMenu with this ---------- */
-
-  /* ---------- DROP-IN REPLACEMENT SettingsMenu ---------- */
+  /* ---------- SettingsMenu component ---------- */
   const SettingsMenu = ({ room }) => {
     const [open, setOpen] = useState(false);
     const [editing, setEditing] = useState(false);
@@ -893,7 +1137,7 @@ export default function Rooms() {
 
     const btnRef = useRef(null);
     const panelRef = useRef(null);
-    const [pos, setPos] = useState(null); // { top, left }
+    const [pos, setPos] = useState(null);
 
     const isOwner =
       isAuthenticated &&
@@ -910,19 +1154,14 @@ export default function Rooms() {
       const btn = btnRef.current;
       if (!btn) return;
       const rect = btn.getBoundingClientRect();
-
-      // Align panel's right edge with button's right edge by default
       const panelWidth = 240;
       const left = rect.right - panelWidth;
       const top = rect.bottom + 8;
-
-      // clamp to viewport
       const finalLeft = Math.max(
         8,
         Math.min(left, window.innerWidth - panelWidth - 8)
       );
       const finalTop = Math.max(8, Math.min(top, window.innerHeight - 120));
-
       setPos({ left: finalLeft, top: finalTop });
 
       const onDocClick = (e) => {
@@ -965,9 +1204,7 @@ export default function Rooms() {
           zIndex: 99999,
         }}
       >
-        {/* Outer box respects dark mode */}
         <div className="w-full rounded-lg border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 text-gray-900 dark:text-gray-100 p-2">
-          {/* Rename / Edit */}
           {!editing ? (
             <button
               onClick={() => {
@@ -1002,7 +1239,6 @@ export default function Rooms() {
             </div>
           )}
 
-          {/* Toggle AI */}
           <button
             onClick={() => {
               toggleAI(room.id);
@@ -1016,7 +1252,6 @@ export default function Rooms() {
             </span>
           </button>
 
-          {/* Delete */}
           <div className="mt-1">
             <button
               onClick={() => setConfirmOpen(true)}
@@ -1044,7 +1279,6 @@ export default function Rooms() {
                   </button>
                   <button
                     onClick={() => {
-                      // close immediately then run delete
                       setConfirmOpen(false);
                       setOpen(false);
                       deleteRoom(room.id);
@@ -1147,15 +1381,6 @@ export default function Rooms() {
             <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">
               {isAuthenticated ? "New Room" : "Guest Join"}
             </h3>
-            {!isAuthenticated && isGuest && (
-              <button
-                type="button"
-                onClick={handleGuestExit}
-                className="text-[10px] px-2 py-0.5 rounded-full border border-red-400 text-red-500 hover:bg-red-500/10"
-              >
-                Exit
-              </button>
-            )}
           </div>
           {isAuthenticated && (
             <form className="flex gap-1" onSubmit={handleCreateRoom}>
@@ -1206,6 +1431,7 @@ export default function Rooms() {
             </div>
           </div>
         </div>
+
         <div className="flex-1 overflow-y-auto min-h-0 flex flex-col gap-2 pr-1 pb-1">
           {rooms.length === 0 && (
             <div className="shrink-0 w-full flex items-center justify-center p-4 text-xs text-gray-400 border border-gray-100 dark:border-gray-700 rounded-xl">
@@ -1228,7 +1454,7 @@ export default function Rooms() {
       >
         {selectedRoom ? (
           <>
-            {/* Mobile header: Back + Exit/Leave (works for both logged-in and guest users) */}
+            {/* Mobile header */}
             <div className="md:hidden flex items-center justify-between gap-2 pb-2 border-b border-gray-200 dark:border-gray-700 mb-1">
               <div className="flex items-center gap-2">
                 <button
@@ -1245,9 +1471,7 @@ export default function Rooms() {
               </div>
 
               <div className="flex items-center gap-2">
-                {/* Logged-in users (owner or member) */}
                 {isAuthenticated ? (
-                  // OWNER exit button
                   String(selectedRoom?.ownerId) === String(user?.email) ||
                   String(selectedRoom?.ownerId) === String(user?._id) ||
                   String(selectedRoom?.ownerId) === String(user?.id) ? (
@@ -1259,36 +1483,50 @@ export default function Rooms() {
                       Close
                     </button>
                   ) : (
-                    // MEMBER exit button
-                    <button
-                      onClick={handleExitCurrentRoom}
-                      className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
-                      title="Leave this room"
-                    >
-                      Leave Room
-                    </button>
+                    <>
+                      <button
+                        onClick={leaveRoomView}
+                        className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 px-2 py-1 rounded hover:bg-gray-100 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800"
+                        title="Leave this room view"
+                      >
+                        Leave Room
+                      </button>
+                      <button
+                        onClick={() => hideRoomForMe(selectedRoomId)}
+                        className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
+                        title="Completely exit & remove room"
+                      >
+                        Exit
+                      </button>
+                    </>
                   )
                 ) : (
-                  // Guest Exit
                   isGuest && (
-                    <button
-                      onClick={handleGuestExit}
-                      className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
-                    >
-                      Exit Session
-                    </button>
+                    <>
+                      <button
+                        onClick={leaveRoomView}
+                        className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 px-2 py-1 rounded hover:bg-gray-100 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800"
+                        title="Leave this room view"
+                      >
+                        Leave Room
+                      </button>
+                      <button
+                        onClick={() => hideRoomForMe(selectedRoomId)}
+                        className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
+                      >
+                        Exit
+                      </button>
+                    </>
                   )
                 )}
               </div>
             </div>
 
-            {/* Desktop Exit Button - Changes based on ownership */}
+            {/* Desktop header */}
             <div className="hidden md:flex items-center justify-end gap-2 pb-0">
-              {(isAuthenticated &&
-                user?.email &&
-                String(selectedRoom?.ownerId) === String(user?.email)) ||
-              String(selectedRoom?.ownerId) === String(user?._id) ||
-              String(selectedRoom?.ownerId) === String(user?.id) ? (
+              {isAuthenticated &&
+              user?.email &&
+              String(selectedRoom?.ownerId) === String(user?.email) ? (
                 <button
                   onClick={handleExitCurrentRoom}
                   className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 px-2 py-1 rounded hover:bg-gray-100 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800"
@@ -1297,13 +1535,22 @@ export default function Rooms() {
                   Close
                 </button>
               ) : (
-                <button
-                  onClick={handleExitCurrentRoom}
-                  className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
-                  title="Completely exit & remove room"
-                >
-                  Leave Room
-                </button>
+                <>
+                  <button
+                    onClick={leaveRoomView}
+                    className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 px-2 py-1 rounded hover:bg-gray-100 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800"
+                    title="Leave this room view"
+                  >
+                    Leave Room
+                  </button>
+                  <button
+                    onClick={() => hideRoomForMe(selectedRoomId)}
+                    className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
+                    title="Completely exit & remove room"
+                  >
+                    Exit
+                  </button>
+                </>
               )}
             </div>
 

@@ -4,8 +4,17 @@ import { useState, useEffect } from "react";
 import { useAuth } from "../context/AuthContext";
 import { useRooms } from "../context/RoomContext";
 import toast from "react-hot-toast";
+// prefer direct socket import if your app exports it; fallback to window.socket
+import { socket as importedSocket } from "../socket";
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
+
+const GUEST_ROOMS_KEY = "lc_ai_guest_rooms";
+const USER_ROOMS_PREFIX = "lc_ai_user_rooms_";
+
+function getUserRoomsKey(email) {
+  return email ? USER_ROOMS_PREFIX + email : null;
+}
 
 export default function JoinRoom() {
   const { roomId } = useParams();
@@ -19,6 +28,9 @@ export default function JoinRoom() {
   const [guestName, setGuestName] = useState("");
   const [loading, setLoading] = useState(false);
 
+  // use whichever socket is present
+  const socket = importedSocket || window?.socket;
+
   // Helper: safely replace/update a room in context (immutable)
   const upsertRoom = (updatedRoom) => {
     setRooms((prev) => {
@@ -31,6 +43,42 @@ export default function JoinRoom() {
     });
   };
 
+  // Save room into user/guest localStorage list (keeps rooms visible between refresh)
+  const persistRoomForUser = (roomObj) => {
+    try {
+      if (isAuthenticated && user?.email) {
+        const key = getUserRoomsKey(user.email);
+        if (!key) return;
+        const raw = localStorage.getItem(key);
+        const list = raw ? JSON.parse(raw) : [];
+        const merged = Array.isArray(list)
+          ? list.some((r) => String(r.id) === String(roomObj.id))
+            ? list.map((r) =>
+                String(r.id) === String(roomObj.id) ? roomObj : r
+              )
+            : [...list, roomObj]
+          : [roomObj];
+        localStorage.setItem(key, JSON.stringify(merged));
+      } else {
+        // guest
+        const raw = localStorage.getItem(GUEST_ROOMS_KEY);
+        const list = raw ? JSON.parse(raw) : [];
+        const merged = Array.isArray(list)
+          ? list.some((r) => String(r.id) === String(roomObj.id))
+            ? list.map((r) =>
+                String(r.id) === String(roomObj.id) ? roomObj : r
+              )
+            : [...list, roomObj]
+          : [roomObj];
+        localStorage.setItem(GUEST_ROOMS_KEY, JSON.stringify(merged));
+      }
+    } catch (e) {
+      console.warn("persistRoomForUser error:", e);
+    }
+  };
+
+  // When the component mounts, if the user is authenticated and the room exists locally,
+  // attempt to join via backend so server has the membership recorded.
   useEffect(() => {
     // no-op if we don't have the room locally yet.
     if (!room) return;
@@ -38,11 +86,12 @@ export default function JoinRoom() {
     // If already a member, nothing to do
     if (isAuthenticated && user?.email) {
       const alreadyMember = Array.isArray(room.members)
-        ? room.members.some((m) => {
-            const mid = m?.id ?? m?._id ?? m?.userId ?? m?.email;
-            const uid = user?._id ?? user?.id ?? user?.email;
-            return String(mid) === String(uid);
-          })
+        ? room.members.some(
+            (m) =>
+              String(m.id) === String(user.email) ||
+              String(m.id) === String(user._id) ||
+              String(m.id) === String(user.id)
+          )
         : false;
 
       if (alreadyMember) return;
@@ -57,7 +106,6 @@ export default function JoinRoom() {
             userName: user.name || user.email,
           };
 
-          // Attempt backend POST to persist membership
           const joinUrl = `${BACKEND_URL || ""}/api/rooms/join`;
           const res = await fetch(joinUrl, {
             method: "POST",
@@ -66,63 +114,20 @@ export default function JoinRoom() {
             body: JSON.stringify(body),
           });
 
+          // if backend responded OK, use returned room; otherwise fall back to optimistic update
+          let updatedRoom;
           if (res.ok) {
-            // backend returned the updated room object
-            const updatedRoom = await res.json();
-
-            // normalize id if backend sends _id
-            updatedRoom.id =
-              updatedRoom.id ||
-              updatedRoom._id?.toString() ||
-              String(updatedRoom.code);
-
-            // update context immutably
-            upsertRoom(updatedRoom);
-
-            // --- SAFE persist to localStorage: read-modify-write so we don't overwrite with stale "rooms" ---
-            try {
-              const storageKey = user?.email
-                ? "lc_ai_user_rooms_" + user.email
-                : "lc_ai_guest_rooms";
-
-              const raw = localStorage.getItem(storageKey);
-              const stored = raw ? JSON.parse(raw) : null;
-              // Merge: prefer stored list, fallback to current context 'rooms' if stored is empty
-              const baseList = Array.isArray(stored)
-                ? stored
-                : Array.isArray(rooms)
-                ? rooms
-                : [];
-              const merged = baseList.some((r) => r.id === updatedRoom.id)
-                ? baseList.map((r) =>
-                    r.id === updatedRoom.id ? updatedRoom : r
-                  )
-                : [...baseList, updatedRoom];
-              localStorage.setItem(storageKey, JSON.stringify(merged));
-            } catch (e) {
-              // ignore storage errors
-            }
-
-            // notify presence via socket (server may also broadcast)
-            try {
-              if (window?.socket) {
-                window.socket.emit("join_room", {
-                  roomId: updatedRoom.id,
-                  displayName: user.name || updatedRoom?.ownerId || user.email,
-                });
-              }
-            } catch {}
-
-            toast.success(`Joined "${updatedRoom.name}"`, { duration: 2500 });
-            // navigate back to /rooms where the UI picks up the selection
-            navigate("/rooms");
+            const json = await res.json();
+            updatedRoom = {
+              ...json,
+              id:
+                json.id ||
+                json._id?.toString() ||
+                String(json.code || room.code),
+            };
           } else {
-            // backend returned non-OK (404/500) -> fallback to optimistic join and socket emit
-            const txt = await res.text().catch(() => "");
-            console.warn("Join POST returned error:", res.status, txt);
-
-            // optimistic local update
-            const localUpdated = {
+            // optimistic local update (backend failed to persist)
+            updatedRoom = {
               ...room,
               members: [
                 ...(room.members || []),
@@ -133,46 +138,94 @@ export default function JoinRoom() {
                 },
               ],
             };
-            upsertRoom(localUpdated);
-
-            // persist optimistic update safely
-            try {
-              const storageKey = user?.email
-                ? "lc_ai_user_rooms_" + user.email
-                : "lc_ai_guest_rooms";
-
-              const raw = localStorage.getItem(storageKey);
-              const stored = raw ? JSON.parse(raw) : null;
-              const baseList = Array.isArray(stored)
-                ? stored
-                : Array.isArray(rooms)
-                ? rooms
-                : [];
-              const merged = baseList.some((r) => r.id === localUpdated.id)
-                ? baseList.map((r) =>
-                    r.id === localUpdated.id ? localUpdated : r
-                  )
-                : [...baseList, localUpdated];
-              localStorage.setItem(storageKey, JSON.stringify(merged));
-            } catch (e) {}
-
-            // emit socket presence so others see it (best-effort)
-            try {
-              if (window?.socket) {
-                window.socket.emit("join_room", {
-                  roomId: localUpdated.id,
-                  displayName: user.name || localUpdated.ownerId || user.email,
-                });
-              }
-            } catch (e) {}
-            toast.success(`Joined "${room.name}" (local only)`, {
-              duration: 2500,
-            });
-            navigate("/rooms");
           }
+
+          // normalize id & persist to context and storage
+          if (!updatedRoom.id) {
+            updatedRoom.id =
+              updatedRoom.id ||
+              updatedRoom._id?.toString() ||
+              String(updatedRoom.code || room.code);
+          }
+
+          upsertRoom(updatedRoom);
+          persistRoomForUser(updatedRoom);
+
+          // Prefer using the socket authenticated join to ensure the server
+          // both persists membership and joins the socket to the room.
+          try {
+            if (socket && socket.emit) {
+              socket.emit(
+                "join_room_authenticated",
+                {
+                  code: room.code || roomId,
+                  userId: user._id || user.id || user.email,
+                  email: user.email || null,
+                  userName: user.name || user.email,
+                },
+                (resp) => {
+                  // server callback: if OK, it already joined socket to room
+                  if (resp && resp.ok && resp.room) {
+                    // use server room to update UI (most authoritative)
+                    const serverRoom = {
+                      ...resp.room,
+                      id:
+                        resp.room.id ||
+                        resp.room._id?.toString() ||
+                        String(resp.room.code || updatedRoom.code),
+                    };
+                    upsertRoom(serverRoom);
+                    persistRoomForUser(serverRoom);
+                  } else {
+                    // fallback: ensure register_user + join_room are called
+                    try {
+                      socket.emit("register_user", {
+                        userId: user._id || user.id,
+                        email: user.email,
+                      });
+                      socket.emit("join_room", {
+                        roomId: updatedRoom.id,
+                        displayName: user.name || user.email,
+                      });
+                      socket.emit("request_room_list");
+                    } catch (e) {}
+                  }
+                }
+              );
+            } else if (window?.socket) {
+              window.socket.emit("join_room_authenticated", {
+                code: room.code || roomId,
+                userId: user._id || user.id || user.email,
+                email: user.email || null,
+                userName: user.name || user.email,
+              });
+              window.socket.emit("request_room_list");
+            }
+          } catch (sockErr) {
+            console.warn("socket emit after auto-join failed:", sockErr);
+            if (socket && socket.emit) {
+              try {
+                socket.emit("register_user", {
+                  userId: user._id || user.id,
+                  email: user.email,
+                });
+                socket.emit("join_room", {
+                  roomId: updatedRoom.id,
+                  displayName: user.name || user.email,
+                });
+                socket.emit("request_room_list");
+              } catch {}
+            }
+          }
+
+          toast.success(`Joined "${updatedRoom.name || room.name}"`, {
+            duration: 2500,
+          });
+
+          navigate("/rooms");
         } catch (err) {
           console.error("JoinRoom join error:", err);
-          // fallback: optimistic local join + socket
+          // fallback: optimistic local join + socket + local persist
           const localUpdated = {
             ...room,
             members: [
@@ -185,35 +238,34 @@ export default function JoinRoom() {
             ],
           };
           upsertRoom(localUpdated);
-          try {
-            // persist optimistic update safely
-            const storageKey = user?.email
-              ? "lc_ai_user_rooms_" + user.email
-              : "lc_ai_guest_rooms";
-
-            const raw = localStorage.getItem(storageKey);
-            const stored = raw ? JSON.parse(raw) : null;
-            const baseList = Array.isArray(stored)
-              ? stored
-              : Array.isArray(rooms)
-              ? rooms
-              : [];
-            const merged = baseList.some((r) => r.id === localUpdated.id)
-              ? baseList.map((r) =>
-                  r.id === localUpdated.id ? localUpdated : r
-                )
-              : [...baseList, localUpdated];
-            localStorage.setItem(storageKey, JSON.stringify(merged));
-          } catch (e) {}
+          persistRoomForUser(localUpdated);
 
           try {
-            if (window?.socket) {
-              window.socket.emit("join_room", {
-                roomId: localUpdated.id,
-                displayName: user.name || localUpdated.ownerId || user.email,
+            if (socket && socket.emit) {
+              socket.emit("register_user", {
+                userId: user._id || user.id || user.email,
+                email: user.email || null,
               });
+              socket.emit("join_room", {
+                roomId:
+                  localUpdated.id || localUpdated._id || localUpdated.code,
+                displayName: user.name || user.email || null,
+              });
+              socket.emit("request_room_list");
+            } else if (window?.socket) {
+              window.socket.emit("register_user", {
+                userId: user._id || user.id || user.email,
+                email: user.email || null,
+              });
+              window.socket.emit("join_room", {
+                roomId:
+                  localUpdated.id || localUpdated._id || localUpdated.code,
+                displayName: user.name || user.email || null,
+              });
+              window.socket.emit("request_room_list");
             }
           } catch (e) {}
+
           toast.success(`Joined "${room.name}" (offline)`, { duration: 2500 });
           navigate("/rooms");
         } finally {
@@ -260,15 +312,27 @@ export default function JoinRoom() {
         ],
       };
       upsertRoom(updatedRoom);
+      persistRoomForUser(updatedRoom);
 
       // Notify backend via socket for guest join (server usually handles guest joins via socket)
       try {
-        if (window?.socket) {
+        if (socket && socket.emit) {
+          socket.emit("join_room_guest", {
+            code: room.code || roomId,
+            name: guestName.trim(),
+            guestId,
+          });
+          // ensure socket has guest userId registered so server knows who this socket is
+          socket.emit("register_user", { userId: guestId, email: null });
+          socket.emit("request_room_list");
+        } else if (window?.socket) {
           window.socket.emit("join_room_guest", {
             code: room.code || roomId,
             name: guestName.trim(),
             guestId,
           });
+          window.socket.emit("register_user", { userId: guestId, email: null });
+          window.socket.emit("request_room_list");
         }
       } catch (e) {
         console.warn("Socket join_room_guest failed", e);

@@ -1228,6 +1228,7 @@ export default function Rooms() {
       >
         {selectedRoom ? (
           <>
+            {/* Mobile header: Back + Exit/Leave (works for both logged-in and guest users) */}
             <div className="md:hidden flex items-center justify-between gap-2 pb-2 border-b border-gray-200 dark:border-gray-700 mb-1">
               <div className="flex items-center gap-2">
                 <button
@@ -1242,21 +1243,52 @@ export default function Rooms() {
                   ← Back
                 </button>
               </div>
-              {!isAuthenticated && isGuest && (
-                <button
-                  onClick={handleGuestExit}
-                  className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
-                >
-                  Exit Session
-                </button>
-              )}
+
+              <div className="flex items-center gap-2">
+                {/* Logged-in users (owner or member) */}
+                {isAuthenticated ? (
+                  // OWNER exit button
+                  String(selectedRoom?.ownerId) === String(user?.email) ||
+                  String(selectedRoom?.ownerId) === String(user?._id) ||
+                  String(selectedRoom?.ownerId) === String(user?.id) ? (
+                    <button
+                      onClick={handleExitCurrentRoom}
+                      className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 px-2 py-1 rounded hover:bg-gray-100 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800"
+                      title="Close chat view"
+                    >
+                      Close
+                    </button>
+                  ) : (
+                    // MEMBER exit button
+                    <button
+                      onClick={handleExitCurrentRoom}
+                      className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
+                      title="Leave this room"
+                    >
+                      Leave Room
+                    </button>
+                  )
+                ) : (
+                  // Guest Exit
+                  isGuest && (
+                    <button
+                      onClick={handleGuestExit}
+                      className="text-xs text-red-500 border border-red-500/50 px-2 py-1 rounded hover:bg-red-500/10"
+                    >
+                      Exit Session
+                    </button>
+                  )
+                )}
+              </div>
             </div>
 
             {/* Desktop Exit Button - Changes based on ownership */}
             <div className="hidden md:flex items-center justify-end gap-2 pb-0">
-              {isAuthenticated &&
-              user?.email &&
-              selectedRoom?.ownerId === user.email ? (
+              {(isAuthenticated &&
+                user?.email &&
+                String(selectedRoom?.ownerId) === String(user?.email)) ||
+              String(selectedRoom?.ownerId) === String(user?._id) ||
+              String(selectedRoom?.ownerId) === String(user?.id) ? (
                 <button
                   onClick={handleExitCurrentRoom}
                   className="text-xs text-gray-500 hover:text-gray-800 border border-gray-200 px-2 py-1 rounded hover:bg-gray-100 dark:text-gray-400 dark:border-gray-700 dark:hover:bg-gray-800"

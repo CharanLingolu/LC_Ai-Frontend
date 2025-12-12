@@ -33,6 +33,9 @@ export default function ChatWindow({
   const messagesContainerRef = useRef(null);
   const inputRef = useRef(null);
 
+  // keep keyboard open until user explicitly closes it (mobile)
+  const [keepKeyboardOpen, setKeepKeyboardOpen] = useState(true);
+
   const themeClass = useMemo(() => {
     switch (currentTheme) {
       case "love":
@@ -78,7 +81,7 @@ export default function ChatWindow({
     // Small timeout makes it more reliable across mobile browsers.
     setTimeout(() => {
       inputRef.current?.focus();
-    }, 80);
+    }, 100);
 
     // Simulate AI reply (your existing behavior)
     setTimeout(() => {
@@ -103,7 +106,7 @@ export default function ChatWindow({
       // Keep focus after AI reply as well
       setTimeout(() => {
         inputRef.current?.focus();
-      }, 50);
+      }, 60);
     }, 700);
   };
 
@@ -116,10 +119,14 @@ export default function ChatWindow({
 
   const handleEmojiClick = (emoji) => {
     setInput((prev) => prev + emoji);
+    // keep keyboard open when emoji inserted
+    setTimeout(() => inputRef.current?.focus(), 10);
   };
 
   const handleThemeChange = (themeId) => {
     setCurrentTheme(themeId);
+    // keep keyboard open when interacting with theme pills
+    setTimeout(() => inputRef.current?.focus(), 10);
   };
 
   // local reactions: we pretend userId is always "me"
@@ -140,6 +147,8 @@ export default function ChatWindow({
         return { ...m, reactions: nextReactions };
       })
     );
+    // after picking a reaction, keep keyboard focused
+    setTimeout(() => inputRef.current?.focus(), 10);
   };
 
   const startLongPress = (messageId) => {
@@ -164,12 +173,31 @@ export default function ChatWindow({
     >
       {/* Header */}
       <div className="px-4 py-3 border-b border-gray-200/70 dark:border-gray-700 bg-gray-900/40 dark:bg-gray-900/70 flex items-center justify-between shrink-0">
-        <div>
-          <h1 className="text-sm font-semibold text-slate-100">{title}</h1>
-          <p className="text-xs text-slate-300">
-            Type a message and press Enter to send.
-          </p>
+        <div className="flex items-center gap-3">
+          {/* MOBILE: Back / Close keyboard button (uses keepKeyboardOpen flag) */}
+          <button
+            type="button"
+            onClick={() => {
+              // user intentionally wants to close keyboard
+              setKeepKeyboardOpen(false);
+              inputRef.current?.blur();
+              setActiveReactionMessageId(null);
+            }}
+            className="md:hidden px-2 py-1 rounded text-sm text-slate-100 hover:bg-white/5"
+            aria-label="Close keyboard"
+            title="Close keyboard"
+          >
+            ←
+          </button>
+
+          <div>
+            <h1 className="text-sm font-semibold text-slate-100">{title}</h1>
+            <p className="text-xs text-slate-300">
+              Type a message and press Enter to send.
+            </p>
+          </div>
         </div>
+
         <div className="flex items-center gap-2">
           {ROOM_THEMES.map((t) => (
             <button
@@ -319,10 +347,20 @@ export default function ChatWindow({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onBlur={() => {
+              // If we should keep keyboard open, immediately refocus the input.
+              // Small timeout makes this reliable across mobile browsers.
+              if (keepKeyboardOpen) {
+                setTimeout(() => {
+                  inputRef.current?.focus();
+                }, 60);
+              }
+            }}
           />
 
           <button
             onClick={handleSend}
+            onPointerDown={(e) => e.preventDefault()}
             onMouseDown={(e) => e.preventDefault()} // prevents temporary blur on pointer down
             onTouchStart={(e) => e.preventDefault()} // prevents temporary blur on touch
             disabled={isSending || !input.trim()}

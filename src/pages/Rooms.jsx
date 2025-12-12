@@ -39,6 +39,27 @@ function normalizeRoom(room) {
   };
 }
 
+// -- safe persist of a single updatedRoom into localStorage (read-modify-write)
+const persistRoomToStorage = (storageKey, updatedRoom) => {
+  try {
+    const raw = localStorage.getItem(storageKey);
+    const stored = raw ? JSON.parse(raw) : null;
+    const baseList = Array.isArray(stored)
+      ? stored
+      : Array.isArray(rooms)
+      ? rooms
+      : [];
+    const merged = baseList.some((r) => String(r.id) === String(updatedRoom.id))
+      ? baseList.map((r) =>
+          String(r.id) === String(updatedRoom.id) ? updatedRoom : r
+        )
+      : [...baseList, updatedRoom];
+    localStorage.setItem(storageKey, JSON.stringify(merged));
+  } catch (e) {
+    console.warn("persistRoomToStorage failed", e);
+  }
+};
+
 function getUserRoomsKey(email) {
   if (!email) return null;
   return USER_ROOMS_PREFIX + email;
@@ -553,7 +574,8 @@ export default function Rooms() {
   };
 
   // ---------- HELPER: attempt to POST to candidate endpoints ----------
-  async function tryPostToJoinEndpoints(body) {
+  // ---------- HELPER: attempt to POST to candidate endpoints (uses provided headers) ----------
+  async function tryPostToJoinEndpoints(body, extraHeaders = {}) {
     const base = (import.meta.env.VITE_BACKEND_URL || "").replace(/\/$/, "");
     const endpoints = [
       `${base}/api/rooms/join`,
@@ -562,24 +584,32 @@ export default function Rooms() {
       `${base}/rooms/join`,
       `${base}/join/room`,
     ];
+
     for (const url of endpoints) {
       try {
         const res = await fetch(url, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: Object.assign(
+            { "Content-Type": "application/json" },
+            extraHeaders || {}
+          ),
           body: JSON.stringify(body),
           credentials: "include",
         });
+
         if (res.status === 404) continue;
         if (res.status === 204 || res.status === 202)
           return { ok: true, data: null, url };
         if (!res.ok) continue;
+
         const json = await res.json().catch(() => null);
         return { ok: true, data: json, url };
       } catch (err) {
+        // try next endpoint
         continue;
       }
     }
+
     return { ok: false, data: null };
   }
 
@@ -631,17 +661,27 @@ export default function Rooms() {
           }
 
           // keep local visibility and storage (your existing behavior)
+          // keep local visibility and storage (your existing behavior)
           unhideRoomForMe(normalized.id);
           setRooms((prev) => {
             const filtered = prev.filter((r) => r.id !== normalized.id);
             const next = [...filtered, normalized];
-            if (user.email) {
+
+            if (user?.email) {
               const key = getUserRoomsKey(user.email);
-              if (key)
+              if (key) {
                 try {
-                  localStorage.setItem(key, JSON.stringify(next));
-                } catch (e) {}
+                  // safe persist using helper to avoid stale overwrite
+                  persistRoomToStorage(key, normalized);
+                } catch (e) {
+                  // fallback: try direct write
+                  try {
+                    localStorage.setItem(key, JSON.stringify(next));
+                  } catch (e2) {}
+                }
+              }
             }
+
             return next;
           });
 

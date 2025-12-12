@@ -31,8 +31,6 @@ export default function JoinRoom() {
     });
   };
 
-  // When the component mounts, if the user is authenticated and the room exists locally,
-  // attempt to join via backend so server has the membership recorded.
   useEffect(() => {
     // no-op if we don't have the room locally yet.
     if (!room) return;
@@ -40,11 +38,11 @@ export default function JoinRoom() {
     // If already a member, nothing to do
     if (isAuthenticated && user?.email) {
       const alreadyMember = Array.isArray(room.members)
-        ? room.members.some(
-            (m) =>
-              String(m.id) === String(user.email) ||
-              String(m.id) === String(user._id)
-          )
+        ? room.members.some((m) => {
+            const mid = m?.id ?? m?._id ?? m?.userId ?? m?.email;
+            const uid = user?._id ?? user?.id ?? user?.email;
+            return String(mid) === String(uid);
+          })
         : false;
 
       if (alreadyMember) return;
@@ -71,16 +69,42 @@ export default function JoinRoom() {
           if (res.ok) {
             // backend returned the updated room object
             const updatedRoom = await res.json();
+
             // normalize id if backend sends _id
             updatedRoom.id =
               updatedRoom.id ||
               updatedRoom._id?.toString() ||
               String(updatedRoom.code);
+
+            // update context immutably
             upsertRoom(updatedRoom);
+
+            // --- SAFE persist to localStorage: read-modify-write so we don't overwrite with stale "rooms" ---
+            try {
+              const storageKey = user?.email
+                ? "lc_ai_user_rooms_" + user.email
+                : "lc_ai_guest_rooms";
+
+              const raw = localStorage.getItem(storageKey);
+              const stored = raw ? JSON.parse(raw) : null;
+              // Merge: prefer stored list, fallback to current context 'rooms' if stored is empty
+              const baseList = Array.isArray(stored)
+                ? stored
+                : Array.isArray(rooms)
+                ? rooms
+                : [];
+              const merged = baseList.some((r) => r.id === updatedRoom.id)
+                ? baseList.map((r) =>
+                    r.id === updatedRoom.id ? updatedRoom : r
+                  )
+                : [...baseList, updatedRoom];
+              localStorage.setItem(storageKey, JSON.stringify(merged));
+            } catch (e) {
+              // ignore storage errors
+            }
+
             // notify presence via socket (server may also broadcast)
             try {
-              // socket is available globally in other files; we use window.socket if you mount it there,
-              // else this will silently fail. If you import socket here, adjust import accordingly.
               if (window?.socket) {
                 window.socket.emit("join_room", {
                   roomId: updatedRoom.id,
@@ -88,18 +112,7 @@ export default function JoinRoom() {
                 });
               }
             } catch {}
-            try {
-              localStorage.setItem(
-                user?.email
-                  ? "lc_ai_user_rooms_" + user.email
-                  : "lc_ai_guest_rooms",
-                JSON.stringify(
-                  (rooms || []).map((r) =>
-                    r.id === updatedRoom.id ? updatedRoom : r
-                  )
-                )
-              );
-            } catch (e) {}
+
             toast.success(`Joined "${updatedRoom.name}"`, { duration: 2500 });
             // navigate back to /rooms where the UI picks up the selection
             navigate("/rooms");
@@ -121,6 +134,27 @@ export default function JoinRoom() {
               ],
             };
             upsertRoom(localUpdated);
+
+            // persist optimistic update safely
+            try {
+              const storageKey = user?.email
+                ? "lc_ai_user_rooms_" + user.email
+                : "lc_ai_guest_rooms";
+
+              const raw = localStorage.getItem(storageKey);
+              const stored = raw ? JSON.parse(raw) : null;
+              const baseList = Array.isArray(stored)
+                ? stored
+                : Array.isArray(rooms)
+                ? rooms
+                : [];
+              const merged = baseList.some((r) => r.id === localUpdated.id)
+                ? baseList.map((r) =>
+                    r.id === localUpdated.id ? localUpdated : r
+                  )
+                : [...baseList, localUpdated];
+              localStorage.setItem(storageKey, JSON.stringify(merged));
+            } catch (e) {}
 
             // emit socket presence so others see it (best-effort)
             try {
@@ -151,6 +185,27 @@ export default function JoinRoom() {
             ],
           };
           upsertRoom(localUpdated);
+          try {
+            // persist optimistic update safely
+            const storageKey = user?.email
+              ? "lc_ai_user_rooms_" + user.email
+              : "lc_ai_guest_rooms";
+
+            const raw = localStorage.getItem(storageKey);
+            const stored = raw ? JSON.parse(raw) : null;
+            const baseList = Array.isArray(stored)
+              ? stored
+              : Array.isArray(rooms)
+              ? rooms
+              : [];
+            const merged = baseList.some((r) => r.id === localUpdated.id)
+              ? baseList.map((r) =>
+                  r.id === localUpdated.id ? localUpdated : r
+                )
+              : [...baseList, localUpdated];
+            localStorage.setItem(storageKey, JSON.stringify(merged));
+          } catch (e) {}
+
           try {
             if (window?.socket) {
               window.socket.emit("join_room", {

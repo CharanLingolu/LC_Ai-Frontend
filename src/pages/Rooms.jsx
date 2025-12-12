@@ -91,6 +91,9 @@ export default function Rooms() {
     return localStorage.getItem(GUEST_NAME_KEY) || "";
   });
 
+  // NEW: joining spinner state
+  const [joining, setJoining] = useState(false);
+
   // refs for mutable state in socket handlers
   const createToastIdRef = useRef(null);
   const pendingRoomCodeRef = useRef(null);
@@ -556,6 +559,11 @@ export default function Rooms() {
         return next;
       });
       setSelectedRoomId(normalized.id);
+
+      // NEW: stop spinner when guest successfully joined
+      try {
+        setJoining(false);
+      } catch (e) {}
     };
 
     const handleRoomCreateFailed = (payload) => {
@@ -569,6 +577,11 @@ export default function Rooms() {
       setPendingRoomCode(null);
       pendingRoomCodeRef.current = null;
       toast.error(msg, { duration: TOAST_DURATION.error });
+
+      // ensure spinner is hidden on failure (safe)
+      try {
+        setJoining(false);
+      } catch (e) {}
     };
 
     const handleActiveUsersUpdate = ({ roomId, count }) => {
@@ -757,170 +770,204 @@ export default function Rooms() {
       toast("Enter a room code first ✨", { duration: TOAST_DURATION.info });
       return;
     }
+
+    // Show spinner as soon as join is initiated
+    setJoining(true);
+
     socket.emit("verify_room_code", trimmed, async (serverRoom) => {
-      if (!serverRoom) {
-        toast.error("Room not found. Check the code again.", {
-          duration: TOAST_DURATION.error,
-        });
-        return;
-      }
-      const roomName = serverRoom.name;
-
-      if (isAuthenticated && user) {
-        try {
-          const token =
-            user?.token || user?.accessToken || user?.authToken || user?.jwt;
-          const headers = {};
-          if (token) headers["Authorization"] = `Bearer ${token}`;
-
-          const body = {
-            code: trimmed,
-            userId: user._id || user.id,
-            userName: user.name,
-          };
-
-          // Try REST join first (best-effort)
-          const result = await tryPostToJoinEndpoints(body, headers);
-
-          const socketJoinPayload = {
-            code: trimmed,
-            userId: user._id || user.id,
-            email: user.email || null,
-            userName: user.name || user.email,
-          };
-
-          const applyJoinedRoomToUI = (joinedRoomObj) => {
-            const normalized = normalizeRoom(joinedRoomObj);
-            if (!normalized) {
-              toast.error("Failed to join room (invalid server response).", {
-                duration: TOAST_DURATION.error,
-              });
-              return;
-            }
-
-            // unhide & persist locally (signed user)
-            unhideRoomForMe(normalized.id);
-            setRooms((prev) => {
-              const filtered = prev.filter((r) => r.id !== normalized.id);
-              const next = [...filtered, normalized];
-
-              if (user?.email) {
-                const key = getUserRoomsKey(user.email);
-                if (key) {
-                  try {
-                    persistRoomToStorage(key, normalized, prev);
-                  } catch (e) {
-                    try {
-                      localStorage.setItem(key, JSON.stringify(next));
-                    } catch (ee) {}
-                  }
-                }
-              }
-
-              try {
-                localStorage.setItem(LAST_ROOM_KEY, normalized.id);
-              } catch (e) {}
-              return next;
-            });
-
-            setSelectedRoomId(normalized.id);
-            toast.success(`Joined room "${normalized.name}" ✅`, {
-              duration: TOAST_DURATION.success,
-            });
-          };
-
-          let socketJoinTried = false;
-          try {
-            if (socket && socket.emit) {
-              socketJoinTried = true;
-              socket.emit(
-                "join_room_authenticated",
-                socketJoinPayload,
-                (resp) => {
-                  if (resp && resp.ok && resp.room) {
-                    applyJoinedRoomToUI(resp.room);
-                    try {
-                      socket.emit("request_room_list");
-                    } catch {}
-                    return;
-                  } else {
-                    const joinedRoom = result.data || serverRoom;
-                    applyJoinedRoomToUI(joinedRoom);
-                    try {
-                      socket.emit("register_user", {
-                        userId: user._id || user.id,
-                        email: user.email,
-                      });
-                      socket.emit("join_room", {
-                        roomId:
-                          (result.data &&
-                            (result.data.id || result.data._id)) ||
-                          serverRoom._id ||
-                          serverRoom.id ||
-                          serverRoom.code,
-                        displayName: user.name || user.email || null,
-                      });
-                      socket.emit("request_room_list");
-                    } catch {}
-                    return;
-                  }
-                }
-              );
-            }
-          } catch (sockErr) {
-            socketJoinTried = false;
-          }
-
-          if (!socketJoinTried) {
-            if (!result.ok) {
-              toast.error("Failed to join room.", {
-                duration: TOAST_DURATION.error,
-              });
-              return;
-            }
-            const joinedRoom = result.data || serverRoom;
-            applyJoinedRoomToUI(joinedRoom);
-          }
-        } catch (err) {
-          toast.error("Failed to join room. Please try again.", {
+      try {
+        if (!serverRoom) {
+          toast.error("Room not found. Check the code again.", {
             duration: TOAST_DURATION.error,
           });
-        }
-      } else {
-        // Guest flow unchanged
-        const existingName = guestName && guestName.trim();
-        const cleanName = existingName;
-        if (!cleanName) {
-          toast.error(
-            `Add your name in the "Your name" box before joining "${roomName}".`,
-            { duration: TOAST_DURATION.error }
-          );
+          setJoining(false);
           return;
         }
-        let guestId = localStorage.getItem(GUEST_ID_KEY);
-        if (!guestId) {
-          guestId = `guest_${Date.now()}_${Math.random()
-            .toString(36)
-            .substring(2, 8)}`;
+        const roomName = serverRoom.name;
+
+        if (isAuthenticated && user) {
           try {
-            localStorage.setItem(GUEST_ID_KEY, guestId);
+            const token =
+              user?.token || user?.accessToken || user?.authToken || user?.jwt;
+            const headers = {};
+            if (token) headers["Authorization"] = `Bearer ${token}`;
+
+            const body = {
+              code: trimmed,
+              userId: user._id || user.id,
+              userName: user.name,
+            };
+
+            // Try REST join first (best-effort)
+            const result = await tryPostToJoinEndpoints(body, headers);
+
+            const socketJoinPayload = {
+              code: trimmed,
+              userId: user._id || user.id,
+              email: user.email || null,
+              userName: user.name || user.email,
+            };
+
+            const applyJoinedRoomToUI = (joinedRoomObj) => {
+              const normalized = normalizeRoom(joinedRoomObj);
+              if (!normalized) {
+                toast.error("Failed to join room (invalid server response).", {
+                  duration: TOAST_DURATION.error,
+                });
+                setJoining(false);
+                return;
+              }
+
+              // unhide & persist locally (signed user)
+              unhideRoomForMe(normalized.id);
+              setRooms((prev) => {
+                const filtered = prev.filter((r) => r.id !== normalized.id);
+                const next = [...filtered, normalized];
+
+                if (user?.email) {
+                  const key = getUserRoomsKey(user.email);
+                  if (key) {
+                    try {
+                      persistRoomToStorage(key, normalized, prev);
+                    } catch (e) {
+                      try {
+                        localStorage.setItem(key, JSON.stringify(next));
+                      } catch (ee) {}
+                    }
+                  }
+                }
+
+                try {
+                  localStorage.setItem(LAST_ROOM_KEY, normalized.id);
+                } catch (e) {}
+                return next;
+              });
+
+              setSelectedRoomId(normalized.id);
+              toast.success(`Joined room "${normalized.name}" ✅`, {
+                duration: TOAST_DURATION.success,
+              });
+
+              // NEW: hide spinner on success
+              setJoining(false);
+            };
+
+            let socketJoinTried = false;
+            try {
+              if (socket && socket.emit) {
+                socketJoinTried = true;
+                socket.emit(
+                  "join_room_authenticated",
+                  socketJoinPayload,
+                  (resp) => {
+                    try {
+                      if (resp && resp.ok && resp.room) {
+                        applyJoinedRoomToUI(resp.room);
+                        try {
+                          socket.emit("request_room_list");
+                        } catch {}
+                        return;
+                      } else {
+                        const joinedRoom = result.data || serverRoom;
+                        applyJoinedRoomToUI(joinedRoom);
+                        try {
+                          socket.emit("register_user", {
+                            userId: user._id || user.id,
+                            email: user.email,
+                          });
+                          socket.emit("join_room", {
+                            roomId:
+                              (result.data &&
+                                (result.data.id || result.data._id)) ||
+                              serverRoom._id ||
+                              serverRoom.id ||
+                              serverRoom.code,
+                            displayName: user.name || user.email || null,
+                          });
+                          socket.emit("request_room_list");
+                        } catch {}
+                        return;
+                      }
+                    } catch (cbErr) {
+                      // ensure spinner removed if callback throws
+                      setJoining(false);
+                      console.error(
+                        "join_room_authenticated callback error",
+                        cbErr
+                      );
+                    }
+                  }
+                );
+              }
+            } catch (sockErr) {
+              socketJoinTried = false;
+            }
+
+            if (!socketJoinTried) {
+              if (!result.ok) {
+                toast.error("Failed to join room.", {
+                  duration: TOAST_DURATION.error,
+                });
+                setJoining(false);
+                return;
+              }
+              const joinedRoom = result.data || serverRoom;
+              applyJoinedRoomToUI(joinedRoom);
+            }
+          } catch (err) {
+            toast.error("Failed to join room. Please try again.", {
+              duration: TOAST_DURATION.error,
+            });
+            setJoining(false);
+          }
+        } else {
+          // Guest flow unchanged
+          const existingName = guestName && guestName.trim();
+          const cleanName = existingName;
+          if (!cleanName) {
+            toast.error(
+              `Add your name in the "Your name" box before joining "${roomName}".`,
+              { duration: TOAST_DURATION.error }
+            );
+            setJoining(false);
+            return;
+          }
+          let guestId = localStorage.getItem(GUEST_ID_KEY);
+          if (!guestId) {
+            guestId = `guest_${Date.now()}_${Math.random()
+              .toString(36)
+              .substring(2, 8)}`;
+            try {
+              localStorage.setItem(GUEST_ID_KEY, guestId);
+            } catch (e) {}
+          }
+          try {
+            localStorage.setItem(GUEST_NAME_KEY, cleanName);
           } catch (e) {}
-        }
-        try {
-          localStorage.setItem(GUEST_NAME_KEY, cleanName);
-        } catch (e) {}
-        setGuestName(cleanName);
-        setIsGuest(true);
-        try {
-          socket.emit("join_room_guest", {
-            code: trimmed,
-            name: cleanName,
-            guestId,
+          setGuestName(cleanName);
+          setIsGuest(true);
+          try {
+            // guest join is async; spinner will be dismissed in the
+            // 'guest_joined_success' socket handler above when server confirms.
+            socket.emit("join_room_guest", {
+              code: trimmed,
+              name: cleanName,
+              guestId,
+            });
+          } catch (e) {
+            // if emit fails, hide spinner to avoid stuck state
+            setJoining(false);
+          }
+          toast.success(`Joining "${roomName}" as ${cleanName} ✨`, {
+            duration: TOAST_DURATION.success,
           });
-        } catch (e) {}
-        toast.success(`Joining "${roomName}" as ${cleanName} ✨`, {
-          duration: TOAST_DURATION.success,
+        }
+      } catch (outerErr) {
+        console.error("verify_room_code flow error", outerErr);
+        toast.error("An error occurred while joining. Try again.", {
+          duration: TOAST_DURATION.error,
         });
+        setJoining(false);
       }
     });
   };
@@ -1370,6 +1417,21 @@ export default function Rooms() {
 
   return (
     <div className="h-[calc(100dvh-64px)] w-full flex flex-col md:flex-row gap-4 p-2 sm:p-4 max-w-7xl mx-auto overflow-hidden">
+      {/* Spinner overlay portal */}
+      {joining &&
+        createPortal(
+          <div className="fixed inset-0 z-[999999] flex items-center justify-center pointer-events-auto">
+            <div className="absolute inset-0 bg-black/50 backdrop-blur-sm"></div>
+            <div className="relative z-50 flex flex-col items-center gap-3 p-6 rounded-lg bg-white dark:bg-gray-900 shadow-2xl">
+              <div className="w-14 h-14 rounded-full border-4 border-t-transparent animate-spin border-blue-600"></div>
+              <div className="text-sm text-gray-800 dark:text-gray-100 font-medium">
+                Joining room...
+              </div>
+            </div>
+          </div>,
+          document.body
+        )}
+
       {/* LEFT COLUMN: Sidebar */}
       <div
         className={`shrink-0 w-full md:w-80 flex flex-col gap-3 h-full overflow-hidden ${

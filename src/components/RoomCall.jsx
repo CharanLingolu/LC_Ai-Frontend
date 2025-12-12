@@ -1,5 +1,6 @@
 // src/components/RoomCall.jsx
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "../context/AuthContext";
 import { socket as callSocket } from "../socket";
 
@@ -65,7 +66,6 @@ export default function RoomCall({ room, displayName }) {
 
   const isOwner = user?.email && room.ownerId === user.email;
 
-  // Init Stream client + call
   // Init Stream client + call (robust: re-use existing client instances)
   useEffect(() => {
     if (!STREAM_API_KEY) return;
@@ -74,7 +74,6 @@ export default function RoomCall({ room, displayName }) {
     let cancelled = false;
     let clientInstance = null;
     let callInstance = null;
-    // track whether this effect created the client (so cleanup can disconnect)
     let createdClientHere = false;
 
     const initStream = async () => {
@@ -97,19 +96,14 @@ export default function RoomCall({ room, displayName }) {
 
         if (cancelled) return;
 
-        // Attempt to use SDK helper (if available)
         if (typeof StreamVideoClient.getOrCreateInstance === "function") {
-          // SDK will reuse existing instance for the same user id
           clientInstance = StreamVideoClient.getOrCreateInstance({
             apiKey: STREAM_API_KEY,
             user: { id: currentUserId, name: currentUserName },
             token,
           });
-          // We cannot know if the SDK created it or reused it, so assume we did NOT create it
-          // (don't disconnect blindly); but it's safe to attempt disconnect on unmount.
           createdClientHere = false;
         } else {
-          // Fallback singleton map on window to avoid duplicate clients (works with HMR)
           const key = `streamClient_${currentUserId}`;
           window.__streamVideoClients = window.__streamVideoClients || {};
 
@@ -129,7 +123,6 @@ export default function RoomCall({ room, displayName }) {
 
         if (cancelled) return;
 
-        // create/get call instance
         callInstance = clientInstance.call("default", String(roomId));
 
         setVideoClient(clientInstance);
@@ -152,12 +145,8 @@ export default function RoomCall({ room, displayName }) {
           if (callInstance) {
             await callInstance.leave().catch(() => {});
           }
-        } catch (_) {
-          /* ignore */
-        }
+        } catch (_) {}
 
-        // If we *created* the client here (fallback path), disconnect it.
-        // If SDK provided getOrCreateInstance, we don't forcibly disconnect shared instance.
         try {
           if (
             createdClientHere &&
@@ -165,7 +154,6 @@ export default function RoomCall({ room, displayName }) {
             typeof clientInstance.disconnectUser === "function"
           ) {
             await clientInstance.disconnectUser().catch(() => {});
-            // also remove from our global map
             const key = `streamClient_${currentUserId}`;
             if (
               window.__streamVideoClients &&
@@ -174,9 +162,7 @@ export default function RoomCall({ room, displayName }) {
               delete window.__streamVideoClients[key];
             }
           }
-        } catch (_) {
-          /* ignore */
-        }
+        } catch (_) {}
       };
 
       cleanup();
@@ -195,22 +181,16 @@ export default function RoomCall({ room, displayName }) {
     callSocket.on("user_joined_call", handleUpdate);
     callSocket.on("user_left_call", handleUpdate);
 
-    // --- updated robust handler: extract exact starter name (accepts object or string) ---
     const handleCallStarted = ({ roomId: startedRoomId, startedBy }) => {
       if (String(startedRoomId) !== String(roomId)) return;
       if (!startedBy) return;
 
-      // startedBy may be:
-      // - an object { id, name, displayName }
-      // - or a simple string with the starter's name
-      // We'll extract the name robustly and avoid showing banner to the starter themself.
       let starterId = null;
       let starterName = null;
 
       if (typeof startedBy === "string") {
         starterName = startedBy;
       } else if (typeof startedBy === "object") {
-        // prefer displayName, then name, then id fallback
         starterName =
           startedBy.displayName ||
           startedBy.name ||
@@ -218,9 +198,7 @@ export default function RoomCall({ room, displayName }) {
         starterId = startedBy.id || null;
       }
 
-      // If the starterId matches current user id, don't show banner
       if (starterId && String(starterId) === String(currentUserId)) return;
-      // If we only received a starter name string that equals our display name, skip banner
       if (!starterId && starterName && starterName === currentUserName) return;
 
       if (!starterName) starterName = "Someone";
@@ -260,7 +238,6 @@ export default function RoomCall({ room, displayName }) {
         displayName: currentUserName,
       });
 
-      // Only the user who first starts the call announces it
       if (!fromBanner) {
         callSocket.emit("call_started", {
           roomId,
@@ -434,6 +411,17 @@ export default function RoomCall({ room, displayName }) {
           onLeave={handleLeave}
         />
       )}
+
+      {/* Floating mini-player: appears while inCall && !fullscreen */}
+      {inCall && !fullscreen && videoClient && call && (
+        <FloatingMiniCall
+          client={videoClient}
+          call={call}
+          roomName={room.name}
+          onOpen={() => setFullscreen(true)}
+          onLeave={handleLeave}
+        />
+      )}
     </>
   );
 }
@@ -603,7 +591,250 @@ function FullscreenCallOverlay({
         .scrollbar-thin::-webkit-scrollbar-thumb:hover {
           background: rgba(255,255,255,0.3);
         }
+
+        /* Mini-player resize handle fix (visible and easy to grab) */
+        .mini-resize-handle {
+          pointer-events: auto !important;
+          z-index: 99999 !important;
+          background: rgba(255,255,255,0.08);
+          width: 28px !important;
+          height: 28px !important;
+          border-radius: 6px !important;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          right: 6px !important;
+          bottom: 6px !important;
+        }
       `}</style>
     </div>
   );
+}
+
+// --- Floating mini-player component (Instagram-like) with resize fix ---
+function FloatingMiniCall({ client, call, roomName, onOpen, onLeave }) {
+  // Guard: if no client or call provided, don't render the mini-player.
+  if (!client || !call || typeof document === "undefined") return null;
+
+  const rootRef = useRef(null);
+  const posKey = "miniCallPos_v1";
+  const sizeKey = "miniCallSize_v1";
+
+  const [pos, setPos] = useState(() => {
+    try {
+      const raw = localStorage.getItem(posKey);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    return { right: 24, bottom: 100 };
+  });
+
+  // Increased default size so it's much more usable by default
+  const [size, setSize] = useState(() => {
+    try {
+      const raw = localStorage.getItem(sizeKey);
+      if (raw) return JSON.parse(raw);
+    } catch (e) {}
+    // default to a bigger size that's easier to read/interact with
+    return { width: 360, height: 220 };
+  });
+
+  const dragging = useRef(false);
+  const resizing = useRef(false);
+  const start = useRef({ x: 0, y: 0 });
+  const startPos = useRef(pos);
+  const startSize = useRef(size);
+
+  useEffect(() => {
+    function up() {
+      dragging.current = false;
+      resizing.current = false;
+      try {
+        localStorage.setItem(posKey, JSON.stringify(pos));
+        localStorage.setItem(sizeKey, JSON.stringify(size));
+      } catch (e) {}
+    }
+    function move(e) {
+      // Prevent default to avoid touch scrolling while resizing
+      if (resizing.current) e.preventDefault?.();
+
+      if (resizing.current) {
+        const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+        const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+        const dx = clientX - start.current.x;
+        const dy = clientY - start.current.y;
+        // Increased max sizes and min sizes for usability
+        const newW = Math.max(220, Math.min(820, startSize.current.width + dx));
+        const newH = Math.max(
+          140,
+          Math.min(520, startSize.current.height + dy)
+        );
+        setSize({ width: newW, height: newH });
+        return;
+      }
+      if (!dragging.current) return;
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+      const dx = clientX - start.current.x;
+      const dy = clientY - start.current.y;
+      const newRight = Math.max(8, startPos.current.right - dx);
+      const newBottom = Math.max(8, startPos.current.bottom - dy);
+      setPos({ right: newRight, bottom: newBottom });
+    }
+
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    window.addEventListener("touchmove", move, { passive: false });
+    window.addEventListener("touchend", up);
+    return () => {
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+      window.removeEventListener("touchmove", move);
+      window.removeEventListener("touchend", up);
+    };
+  }, [pos, size]);
+
+  const onPointerDown = (e) => {
+    if (resizing.current) return;
+    // stop text selection
+    e.preventDefault?.();
+    dragging.current = true;
+    start.current.x = e.touches ? e.touches[0].clientX : e.clientX;
+    start.current.y = e.touches ? e.touches[0].clientY : e.clientY;
+    startPos.current = pos;
+  };
+
+  const onResizeDown = (e) => {
+    // stop propagation and selection
+    e.stopPropagation?.();
+    e.preventDefault?.();
+    resizing.current = true;
+    start.current.x = e.touches ? e.touches[0].clientX : e.clientX;
+    start.current.y = e.touches ? e.touches[0].clientY : e.clientY;
+    startSize.current = size;
+  };
+
+  // Render the mini window. Controls are inside StreamCall so SDK hooks are safe.
+  const mini = (
+    <div
+      ref={rootRef}
+      className="fixed z-[9998] rounded-xl overflow-hidden shadow-2xl bg-black/88 backdrop-blur-md border border-white/10 flex flex-col"
+      style={{
+        right: pos.right,
+        bottom: pos.bottom,
+        width: size.width,
+        height: size.height,
+      }}
+    >
+      <div
+        className="flex items-center justify-between px-3 py-1.5 cursor-move"
+        onMouseDown={onPointerDown}
+        onTouchStart={onPointerDown}
+        title="Drag to move"
+      >
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-full bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-sm font-bold text-white">
+            {(roomName || "R").charAt(0).toUpperCase()}
+          </div>
+          <div className="flex flex-col">
+            <div className="text-sm font-semibold text-white line-clamp-1 max-w-[200px]">
+              {roomName}
+            </div>
+            <div className="text-[11px] text-gray-300">Live</div>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={onOpen}
+            className="p-1.5 rounded-md hover:bg-white/10 text-white"
+            title="Open"
+          >
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+            >
+              <path
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"
+              />
+            </svg>
+          </button>
+          <button
+            onClick={onLeave}
+            className="p-1.5 rounded-md hover:bg-white/10 text-white"
+            title="End"
+          >
+            <svg
+              className="w-5 h-5"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+            >
+              <path
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                d="M6 18L18 6M6 6l12 12"
+              />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <StreamVideo client={client}>
+        <StreamCall call={call}>
+          <div className="flex-1 bg-black relative">
+            {/* video preview: keep the inner preview non-interactive so it doesn't steal pointer events */}
+            <div className="w-full h-full">
+              <div className="w-full h-full pointer-events-none">
+                <SpeakerLayout participantsBarPosition="bottom" />
+              </div>
+            </div>
+
+            {/* Controls INSIDE StreamCall context so SDK hooks are safe */}
+            <div className="absolute left-3 bottom-3 flex items-center gap-2 pointer-events-auto">
+              <div className="custom-mini-btn">
+                <ToggleAudioPublishingButton />
+              </div>
+              <div className="custom-mini-btn">
+                <ToggleVideoPublishingButton />
+              </div>
+            </div>
+
+            {/* Bigger visible Resize handle (bottom-right). Easy to grab and touch friendly. */}
+            <div
+              onMouseDown={onResizeDown}
+              onTouchStart={onResizeDown}
+              className="mini-resize-handle absolute"
+              title="Resize"
+              style={{ right: 8, bottom: 8 }}
+            >
+              <svg
+                className="w-4 h-4 text-white opacity-85"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+              >
+                <path
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M16 16l4 4M12 16l8 8"
+                />
+              </svg>
+            </div>
+          </div>
+        </StreamCall>
+      </StreamVideo>
+
+      <style>{`
+        .custom-mini-btn .str-video__btn { width:36px !important; height:36px !important; border-radius:10px !important; }
+      `}</style>
+    </div>
+  );
+
+  return createPortal(mini, document.body);
 }

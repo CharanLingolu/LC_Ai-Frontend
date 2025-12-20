@@ -22,14 +22,14 @@ const TOAST_DURATION = {
   error: 5000,
 };
 
-const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
-const DEFAULT_JOIN_PATHS = [
-  "/api/rooms/join",
-  "/rooms/join",
-  "/api/rooms/join/verify",
-  "/api/join-room",
-  "/join/room",
-];
+// const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || "";
+// const DEFAULT_JOIN_PATHS = [
+//   "/api/rooms/join",
+//   "/rooms/join",
+//   "/api/rooms/join/verify",
+//   "/api/join-room",
+//   "/join/room",
+// ];
 
 function normalizeRoom(room) {
   if (!room) return null;
@@ -1416,7 +1416,7 @@ export default function Rooms() {
     isAuthenticated && user?.name ? user.name : guestName || "Guest";
 
   return (
-    <div className="h-[calc(100dvh-64px)] w-full flex flex-col md:flex-row gap-4 p-2 sm:p-4 max-w-7xl mx-auto overflow-hidden">
+    <div className="h-[calc(100dvh-64px)] w-full flex flex-col lg:flex-row gap-4 p-2 lg:p-4 max-w-7xl mx-auto overflow-hidden">
       {/* Spinner overlay portal */}
       {joining &&
         createPortal(
@@ -1434,8 +1434,8 @@ export default function Rooms() {
 
       {/* LEFT COLUMN: Sidebar */}
       <div
-        className={`shrink-0 w-full md:w-80 flex flex-col gap-3 h-full overflow-hidden ${
-          selectedRoomId ? "hidden md:flex" : "flex"
+        className={`shrink-0 w-full lg:w-80 flex flex-col gap-3 h-full overflow-hidden ${
+          selectedRoomId ? "hidden lg:flex" : "flex"
         }`}
       >
         <div className="shrink-0 p-3 rounded-xl border border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900/50 flex flex-col gap-2">
@@ -1511,13 +1511,13 @@ export default function Rooms() {
       {/* RIGHT COLUMN: Call + Chat */}
       <div
         className={`flex-1 flex flex-col min-h-0 overflow-hidden gap-2 pb-1 ${
-          !selectedRoomId ? "hidden md:flex" : "flex"
+          !selectedRoomId ? "hidden lg:flex" : "flex"
         }`}
       >
         {selectedRoom ? (
           <>
             {/* Mobile header */}
-            <div className="md:hidden flex items-center justify-between gap-2 pb-2 border-b border-gray-200 dark:border-gray-700 mb-1">
+            <div className="lg:hidden flex items-center justify-between gap-2 pb-2 border-b border-gray-200 dark:border-gray-700 mb-1">
               <div className="flex items-center gap-2">
                 <button
                   onClick={() => {
@@ -1585,7 +1585,7 @@ export default function Rooms() {
             </div>
 
             {/* Desktop header */}
-            <div className="hidden md:flex items-center justify-end gap-2 pb-0">
+            <div className="hidden lg:flex items-center justify-end gap-2 pb-0">
               {isAuthenticated &&
               user?.email &&
               String(selectedRoom?.ownerId) === String(user?.email) ? (

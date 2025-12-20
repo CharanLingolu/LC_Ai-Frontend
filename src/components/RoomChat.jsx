@@ -5,7 +5,7 @@ import { callLCai } from "../utils/aiClient";
 import { socket } from "../socket";
 import toast from "react-hot-toast";
 
-const INPUT_EMOJIS = ["❤️", "😀", "😂", "😢", "🔥", "👍", "🙏"];
+const INPUT_EMOJIS = ["❤️", "😂", "😢", "🔥", "👍", "🙏"];
 const REACTION_EMOJIS = ["❤️", "😂", "👍", "😮", "🔥", "😢"];
 
 const ROOM_THEMES = [
@@ -956,10 +956,34 @@ export default function RoomChat({ room, displayName }) {
             type="button"
             onClick={handleMediaClick}
             disabled={uploading}
-            className="px-2 py-1 text-xs sm:text-sm rounded-lg border border-gray-200/40 dark:border-gray-700 bg-black/30 dark:bg-gray-800 hover:bg-black/40 dark:hover:bg-gray-700 text-gray-100 disabled:opacity-60"
+            className="
+    flex items-center gap-2
+    px-3 py-1.5
+    text-xs sm:text-sm
+    rounded-lg
+    border
+    border-gray-300 dark:border-gray-700
+    bg-white dark:bg-gray-800
+    text-gray-700 dark:text-gray-200
+    hover:bg-gray-100 dark:hover:bg-gray-700
+    transition-colors
+    disabled:opacity-60 disabled:cursor-not-allowed
+  "
           >
-            {uploading ? "Uploading..." : "📎"}
+            {uploading ? (
+              <span className="animate-pulse">Uploading...</span>
+            ) : (
+              <>
+                <img
+                  src="/upload.png"
+                  alt="Upload"
+                  className="w-4 h-4 sm:w-5 sm:h-4.5
+                   invert-0 dark:invert"
+                />
+              </>
+            )}
           </button>
+
           {INPUT_EMOJIS.map((em) => (
             <button
               key={em}

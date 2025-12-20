@@ -12,7 +12,7 @@ export default function Home() {
         <li>• Text Tools – rewrite, summarize, explain</li>
         <li>• Friend Mode – chat as a temporary or permanent friend</li>
         <li>• Rooms – group chat with friends and AI</li>
-        <li>• For better experience login or signup</li>
+        <li>• For better experience signIn or signUp</li>
       </ul>
     </div>
   );

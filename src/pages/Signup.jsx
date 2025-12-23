@@ -20,6 +20,8 @@ export default function Signup() {
   const DEFAULT_TOAST_LIFETIME = 1400;
   const SUCCESS_TOAST_LIFETIME = 2000; // longer for success
 
+  const BACKEND = import.meta.env.VITE_BACKEND_URL || "http://localhost:5000";
+
   const addToast = (
     message,
     type = "info",
@@ -52,35 +54,43 @@ export default function Signup() {
 
     try {
       setLoading(true);
-      const res = await fetch(
-        "http://localhost:5000/api/auth/signup/request-otp",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name, email, password }),
-        }
-      );
 
-      const data = await res.json();
+      console.log("📤 Sending OTP request:", { name, email });
+
+      const res = await fetch(`${BACKEND}/api/auth/signup/request-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include", // ✅ IMPORTANT
+        body: JSON.stringify({ name, email, password }),
+      });
+
+      let data;
+      try {
+        data = await res.json();
+      } catch {
+        throw new Error("Server returned invalid response");
+      }
+
       setLoading(false);
 
       if (!res.ok) {
         return setErrorWithToast(data.error || "Failed to send OTP");
       }
 
-      // If devOtp is returned (email failed), show it
-      if (data.devOtp) {
-        setDevOtp(data.devOtp);
-        addToast(`Dev OTP: ${data.devOtp}`, "warning", DEFAULT_TOAST_LIFETIME);
-      } else {
-        addToast("OTP sent to your email", "success", SUCCESS_TOAST_LIFETIME);
-      }
+      // ✅ SUCCESS FEEDBACK
+      addToast("OTP sent to your email", "success", SUCCESS_TOAST_LIFETIME);
+
+      // // optional dev OTP display
+      // if (data.devOtp) {
+      //   setDevOtp(data.devOtp);
+      //   addToast(`Dev OTP: ${data.devOtp}`, "warning");
+      // }
 
       setStep(2);
     } catch (err) {
-      console.error(err);
+      console.error("❌ OTP request failed:", err);
       setLoading(false);
-      setErrorWithToast("Something went wrong. Try again.");
+      setErrorWithToast("Unable to send OTP. Please try again.");
     }
   };
 
@@ -94,14 +104,11 @@ export default function Signup() {
 
     try {
       setLoading(true);
-      const res = await fetch(
-        "http://localhost:5000/api/auth/signup/verify-otp",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, otp }),
-        }
-      );
+      const res = await fetch(`${BACKEND}/api/auth/signup/verify-otp`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, otp }),
+      });
 
       const data = await res.json();
 

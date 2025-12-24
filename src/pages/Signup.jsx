@@ -167,7 +167,7 @@ export default function Signup() {
 
   return (
     <>
-      <div className="max-w-md mx-auto mt-12 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-md">
+      <div className="max-w-md mx-auto mt-24 rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-md">
         <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100 mb-4">
           Create your LC_Ai account
         </h1>

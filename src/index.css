@@ -237,3 +237,48 @@ body,
 .chat-theme-default.light .bg-emerald-600 .text-white {
   color: #ffffff !important;
 }
+
+@layer utilities {
+  /* target autofill specifically */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    /* 1. Force the background color to match your dark theme (gray-900 is #111827) */
+    -webkit-box-shadow: 0 0 0 30px #111827 inset !important;
+
+    /* 2. Force the text color to be white */
+    -webkit-text-fill-color: white !important;
+
+    /* 3. Ensure the text cursor remains visible */
+    caret-color: white !important;
+
+    /* 4. Smooth transition to prevent flashing */
+    transition: background-color 5000s ease-in-out 0s;
+  }
+}
+
+@layer utilities {
+  /* --- 1. LIGHT MODE (Default) Fix --- */
+  /* Forces autofill to be WHITE background with BLACK text */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px white inset !important;
+    -webkit-text-fill-color: black !important;
+    caret-color: black !important;
+    transition: background-color 5000s ease-in-out 0s;
+  }
+
+  /* --- 2. DARK MODE Fix --- */
+  /* Only applies when a parent has the 'dark' class (e.g. <html class="dark">) */
+  .dark input:-webkit-autofill,
+  .dark input:-webkit-autofill:hover,
+  .dark input:-webkit-autofill:focus,
+  .dark input:-webkit-autofill:active {
+    -webkit-box-shadow: 0 0 0 30px #111827 inset !important; /* Matches bg-gray-900 */
+    -webkit-text-fill-color: white !important;
+    caret-color: white !important;
+  }
+}
